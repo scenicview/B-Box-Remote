@@ -1549,11 +1549,26 @@ uint32_t lastBtUpdate = 0;
 void sendBluetoothStatus() {
   if (!bleConnected) return;
 
-  // Format: FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL
-  // Example: 4,12,1.25,18.5,85,1,5.2,-3.1
-  String status = String(gps.fixQuality);
+  // Make local copies to avoid race conditions with GPS parsing
+  // (GPS NMEA parsing can update struct while we're building status string)
+  int localFixQuality = gps.fixQuality;
+  int localSatellites = gps.satellites;
+  double localLatitude = gps.latitude;
+  double localLongitude = gps.longitude;
+  bool localGpsValid = gps.valid;
+
+  // Sanity check - discard obviously corrupt values
+  if (localFixQuality < 0 || localFixQuality > 6 || localSatellites < 0 || localSatellites > 50) {
+    localFixQuality = 0;
+    localSatellites = 0;
+    localGpsValid = false;
+  }
+
+  // Format: FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL,LAT,LON
+  // Example: 4,12,1.25,18.5,85,1,5.2,-3.1,54.3742363,-126.7221132
+  String status = String(localFixQuality);
   status += ",";
-  status += String(gps.satellites);
+  status += String(localSatellites);
   status += ",";
   if (sonar.valid && (millis() - sonar.lastUpdate < 5000)) {
     status += String(sonar.depthMeters, 2);
@@ -1578,15 +1593,15 @@ void sendBluetoothStatus() {
   // Add lat/lon for app display
   status += ",";
   // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
-  bool gpsValid = gps.valid && 
-                  gps.satellites >= 4 &&
-                  gps.latitude != 0.0 && gps.longitude != 0.0 &&
-                  gps.latitude > -90.0 && gps.latitude < 90.0 &&
-                  gps.longitude > -180.0 && gps.longitude < 180.0;
+  bool gpsValid = localGpsValid &&
+                  localSatellites >= 4 &&
+                  localLatitude != 0.0 && localLongitude != 0.0 &&
+                  localLatitude > -90.0 && localLatitude < 90.0 &&
+                  localLongitude > -180.0 && localLongitude < 180.0;
   if (gpsValid) {
-    status += String(gps.latitude, 7);
+    status += String(localLatitude, 7);
     status += ",";
-    status += String(gps.longitude, 7);
+    status += String(localLongitude, 7);
   } else {
     status += "0,0";
   }
