@@ -115,6 +115,17 @@ bool imuFilterInitialized = false;
 #define LORA_SYNC_WORD     0x12
 #define LORA_TX_POWER      20
 
+// ========== LORA TELEMETRY (Status TX to Shore Station) ==========
+#define STATUS_PACKET_TYPE 0xBB     // Magic byte to identify status packets
+#define LORA_STATUS_INTERVAL_MS 100 // Send status at 10 Hz when enabled
+bool loraTelemEnabled = true;       // Enable LoRa status telemetry by default
+uint32_t lastLoraStatusTx = 0;      // Last status TX time
+uint32_t loraStatusTxCount = 0;     // Count of status packets sent
+
+// RTCM via BLE counters
+uint32_t rtcmViaBleCount = 0;        // Count of RTCM messages received via BLE
+uint32_t rtcmViaBleBytes = 0;        // Total bytes received via BLE
+
 // ========== BUFFER SIZES ==========
 #define RTCM_BUFFER_SIZE   1024
 #define NMEA_BUFFER_SIZE   256
@@ -330,9 +341,24 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo& connInfo) override {
     std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
-      Serial.print("[BLE] RX: ");
-      Serial.println(rxValue.c_str());
-      bleRxBuffer += rxValue.c_str();
+      // Check for RTCM binary data (starts with "RTCM:")
+      if (rxValue.length() > 5 && rxValue.substr(0, 5) == "RTCM:") {
+        // Forward raw RTCM data to GPS (skip the "RTCM:" prefix)
+        size_t rtcmLen = rxValue.length() - 5;
+        const uint8_t* rtcmData = (const uint8_t*)(rxValue.data() + 5);
+        GPSSerial.write(rtcmData, rtcmLen);
+        rtcmViaBleCount++;
+        rtcmViaBleBytes += rtcmLen;
+        // Don't log every RTCM packet - too verbose
+        if (rtcmViaBleCount % 100 == 1) {
+          Serial.printf("[BLE] RTCM: %d msgs, %d bytes total\n", rtcmViaBleCount, rtcmViaBleBytes);
+        }
+      } else {
+        // Normal text command - add to buffer
+        Serial.print("[BLE] RX: ");
+        Serial.println(rxValue.c_str());
+        bleRxBuffer += rxValue.c_str();
+      }
     }
   }
 
@@ -512,6 +538,11 @@ void loop() {
   }
   if (bleConnected && !oldBleConnected) {
     oldBleConnected = bleConnected;
+  }
+
+  // 13. Send LoRa telemetry status to Shore Station
+  if (loraTelemEnabled) {
+    sendLoRaStatus();
   }
 
   yield();
@@ -1454,6 +1485,63 @@ void bleSend(const String& data) {
   }
 }
 
+// ========== LORA TELEMETRY TX ==========
+void sendLoRaStatus() {
+  if (!loraTelemEnabled) return;
+  if (millis() - lastLoraStatusTx < LORA_STATUS_INTERVAL_MS) return;
+
+  // Format status string (same as BLE format)
+  String status = String(gps.fixQuality);
+  status += ",";
+  status += String(gps.satellites);
+  status += ",";
+  if (sonar.valid && (millis() - sonar.lastUpdate < 5000)) {
+    status += String(sonar.depthMeters, 2);
+  } else {
+    status += "-1";
+  }
+  status += ",";
+  status += String(sonar.waterTempC, 1);
+  status += ",";
+  status += String(sonar.batteryPercent);
+  status += ",";
+  status += String(recordingEnabled ? 1 : 0);
+  status += ",";
+  if (imu.valid) {
+    status += String(imu.pitch, 1);
+    status += ",";
+    status += String(imu.roll, 1);
+  } else {
+    status += "0,0";
+  }
+  status += ",";
+  // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
+  bool loraGpsValid = gps.valid && 
+                      gps.satellites >= 4 &&
+                      gps.latitude != 0.0 && gps.longitude != 0.0 &&
+                      gps.latitude > -90.0 && gps.latitude < 90.0 &&
+                      gps.longitude > -180.0 && gps.longitude < 180.0;
+  if (loraGpsValid) {
+    status += String(gps.latitude, 7);
+    status += ",";
+    status += String(gps.longitude, 7);
+  } else {
+    status += "0,0";
+  }
+
+  // Send via LoRa with magic byte prefix
+  LoRa.beginPacket();
+  LoRa.write(STATUS_PACKET_TYPE);  // Magic byte 0xBB
+  LoRa.print(status);
+  LoRa.endPacket();
+
+  lastLoraStatusTx = millis();
+  loraStatusTxCount++;
+
+  Serial.print("[LORA TX] Status sent, count: ");
+  Serial.println(loraStatusTxCount);
+}
+
 // ========== BLUETOOTH FUNCTIONS ==========
 uint32_t lastBtUpdate = 0;
 
@@ -1488,10 +1576,16 @@ void sendBluetoothStatus() {
   }
   // Add lat/lon for app display
   status += ",";
-  if (gps.valid && gps.latitude != 0.0) {
-    status += String(gps.latitude, 6);
+  // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
+  bool gpsValid = gps.valid && 
+                  gps.satellites >= 4 &&
+                  gps.latitude != 0.0 && gps.longitude != 0.0 &&
+                  gps.latitude > -90.0 && gps.latitude < 90.0 &&
+                  gps.longitude > -180.0 && gps.longitude < 180.0;
+  if (gpsValid) {
+    status += String(gps.latitude, 7);
     status += ",";
-    status += String(gps.longitude, 6);
+    status += String(gps.longitude, 7);
   } else {
     status += "0,0";
   }
@@ -1565,6 +1659,25 @@ void handleBluetooth() {
       handleDownloadLog(filename);
     } else if (cmd == "DELETE_ALL") {
       handleDeleteAllLogs();
+    } else if (cmd == "LORA_ON") {
+      loraTelemEnabled = true;
+      bleSend("OK:LORA_ON\n");
+      Serial.println("[BLE] LoRa telemetry enabled");
+    } else if (cmd == "LORA_OFF") {
+      loraTelemEnabled = false;
+      bleSend("OK:LORA_OFF\n");
+      Serial.println("[BLE] LoRa telemetry disabled");
+    } else if (cmd == "LORA_STATUS") {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "LORA:%s,TX:%lu\n",
+               loraTelemEnabled ? "ON" : "OFF",
+               loraStatusTxCount);
+      bleSend(buf);
+    } else if (cmd == "RTCM_STATUS") {
+      char buf[64];
+      snprintf(buf, sizeof(buf), "RTCM_BLE:%lu,%lu\n",
+               rtcmViaBleCount, rtcmViaBleBytes);
+      bleSend(buf);
     }
   }
 
@@ -1695,23 +1808,12 @@ void handleListLogs() {
     return;
   }
 
-  String response = "LOGS:";
+  // First pass: count files
   int fileCount = 0;
-
   File file = root.openNextFile();
   while (file) {
     String name = file.name();
-    // Only list CSV log files
     if (name.startsWith("log_") && name.endsWith(".csv")) {
-      if (fileCount > 0) {
-        response += ";";
-      }
-      // Format: name,size,timestamp
-      response += name;
-      response += ",";
-      response += String(file.size());
-      response += ",";
-      response += String(file.getLastWrite());
       fileCount++;
     }
     file.close();
@@ -1721,10 +1823,33 @@ void handleListLogs() {
 
   if (fileCount == 0) {
     bleSend("LOGS:EMPTY\n");
-  } else {
-    response += "\n";
-    bleSend(response);
+    Serial.println("[LOG] No log files found");
+    return;
   }
+
+  // Send start marker with count
+  String startMsg = "LOGS_START:" + String(fileCount) + "\n";
+  bleSend(startMsg);
+  delay(20);  // Small delay between messages
+
+  // Second pass: send each file individually
+  root = SD_MMC.open("/");
+  file = root.openNextFile();
+  while (file) {
+    String name = file.name();
+    if (name.startsWith("log_") && name.endsWith(".csv")) {
+      // Format: LOG:name,size,timestamp
+      String logMsg = "LOG:" + name + "," + String(file.size()) + "," + String(file.getLastWrite()) + "\n";
+      bleSend(logMsg);
+      delay(20);  // Small delay between messages for BLE stability
+    }
+    file.close();
+    file = root.openNextFile();
+  }
+  root.close();
+
+  // Send end marker
+  bleSend("LOGS_END\n");
 
   Serial.print("[LOG] Listed ");
   Serial.print(fileCount);

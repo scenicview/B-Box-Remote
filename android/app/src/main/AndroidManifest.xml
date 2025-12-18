@@ -24,6 +24,7 @@
         android:icon="@drawable/ic_launcher_foreground"
         android:label="@string/app_name"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.DeeperRTKRemote">
         <activity
             android:name=".MainActivity"
@@ -33,6 +34,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".OfflineMapActivity"
+            android:exported="false"
+            android:theme="@style/Theme.DeeperRTKRemote"/>
     </application>
 
 </manifest>

@@ -320,6 +320,591 @@
                 android:orientation="vertical"
                 android:padding="16dp">
 
+                <!-- Radio Link Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="16dp"
+                    android:layout_marginBottom="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Connection Mode"
+                        android:textColor="#ffffff"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp"/>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Direct: Connect to B-Box via BLE (close range)
+Radio Link: Connect via Shore Station LoRa relay"
+                        android:textColor="#888888"
+                        android:textSize="12sp"
+                        android:layout_marginBottom="12dp"/>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center">
+
+                        <Button
+                            android:id="@+id/btnDirectMode"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_weight="1"
+                            android:text="Direct
+(BLE)"
+                            android:textSize="11sp"
+                            android:textAllCaps="false"
+                            android:backgroundTint="#00bcd4"
+                            android:layout_marginEnd="8dp"/>
+
+                        <Button
+                            android:id="@+id/btnRadioMode"
+                            android:layout_width="0dp"
+                            android:layout_height="48dp"
+                            android:layout_weight="1"
+                            android:text="Radio Link
+(LoRa)"
+                            android:textSize="11sp"
+                            android:textAllCaps="false"
+                            android:backgroundTint="#666666"/>
+
+                    </LinearLayout>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginTop="12dp">
+
+                        <View
+                            android:id="@+id/radioModeIndicator"
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:background="@drawable/indicator_disconnected"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/radioModeStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Mode: Direct BLE"
+                            android:textColor="#00bcd4"
+                            android:textSize="14sp"/>
+
+                    </LinearLayout>
+
+                </LinearLayout>
+
+                <!-- RTK/NTRIP Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="16dp"
+                    android:layout_marginBottom="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="RTK Corrections (NTRIP)"
+                        android:textColor="#ffffff"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp"/>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Connect to NTRIP caster to receive RTCM corrections via cellular data"
+                        android:textColor="#888888"
+                        android:textSize="12sp"
+                        android:layout_marginBottom="12dp"/>
+
+                    <!-- Server Host -->
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Server Host"
+                        android:textColor="#888888"
+                        android:textSize="12sp"/>
+
+                    <EditText
+                        android:id="@+id/ntripHost"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="192.168.1.8"
+                        android:textColor="#ffffff"
+                        android:background="#1a1a2e"
+                        android:padding="10dp"
+                        android:inputType="text"
+                        android:layout_marginBottom="8dp"/>
+
+                    <!-- Port and Mountpoint row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="8dp">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical"
+                            android:layout_marginEnd="8dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Port"
+                                android:textColor="#888888"
+                                android:textSize="12sp"/>
+
+                            <EditText
+                                android:id="@+id/ntripPort"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="12345"
+                                android:textColor="#ffffff"
+                                android:background="#1a1a2e"
+                                android:padding="10dp"
+                                android:inputType="number"/>
+
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="2"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Mountpoint"
+                                android:textColor="#888888"
+                                android:textSize="12sp"/>
+
+                            <EditText
+                                android:id="@+id/ntripMountpoint"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="LB1U02096"
+                                android:textColor="#ffffff"
+                                android:background="#1a1a2e"
+                                android:padding="10dp"
+                                android:inputType="text"/>
+
+                        </LinearLayout>
+
+                    </LinearLayout>
+
+                    <!-- Username and Password row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:layout_marginBottom="12dp">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical"
+                            android:layout_marginEnd="8dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Username"
+                                android:textColor="#888888"
+                                android:textSize="12sp"/>
+
+                            <EditText
+                                android:id="@+id/ntripUsername"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="chris"
+                                android:textColor="#ffffff"
+                                android:background="#1a1a2e"
+                                android:padding="10dp"
+                                android:inputType="text"/>
+
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Password"
+                                android:textColor="#888888"
+                                android:textSize="12sp"/>
+
+                            <EditText
+                                android:id="@+id/ntripPassword"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="chris"
+                                android:textColor="#ffffff"
+                                android:background="#1a1a2e"
+                                android:padding="10dp"
+                                android:inputType="textPassword"/>
+
+                        </LinearLayout>
+
+                    </LinearLayout>
+
+                    <!-- Connect button and status -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <Button
+                            android:id="@+id/ntripConnectButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Connect"
+                            android:backgroundTint="#FF9800"
+                            android:layout_marginEnd="12dp"/>
+
+                        <View
+                            android:id="@+id/ntripIndicator"
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:background="@drawable/indicator_disconnected"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/ntripStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Disconnected"
+                            android:textColor="#888888"
+                            android:textSize="14sp"/>
+
+                    </LinearLayout>
+
+                    <!-- RTCM Stats -->
+                    <TextView
+                        android:id="@+id/ntripStats"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="RTCM: 0 msgs | 0 bytes"
+                        android:textColor="#666666"
+                        android:textSize="12sp"
+                        android:layout_marginTop="8dp"
+                        android:fontFamily="monospace"/>
+
+                    <!-- Message Rate Controls (Hz) -->
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Message Rates (Hz, 0=off)"
+                        android:textColor="#888888"
+                        android:textSize="12sp"
+                        android:layout_marginTop="12dp"
+                        android:layout_marginBottom="4dp"/>
+
+                    <!-- Row 1: Station ARP -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="90dp"
+                            android:layout_height="wrap_content"
+                            android:text="1005/6 ARP"
+                            android:textColor="#00bcd4"
+                            android:textSize="12sp"/>
+
+                        <EditText
+                            android:id="@+id/hzStation"
+                            android:layout_width="48dp"
+                            android:layout_height="32dp"
+                            android:text="0.1"
+                            android:textColor="#ffffff"
+                            android:textSize="12sp"
+                            android:inputType="numberDecimal"
+                            android:gravity="center"
+                            android:background="#1a1a2e"
+                            android:padding="4dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=" Hz"
+                            android:textColor="#666666"
+                            android:textSize="11sp"/>
+
+                        <TextView
+                            android:id="@+id/cntStation"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="0"
+                            android:textColor="#666666"
+                            android:textSize="11sp"
+                            android:gravity="end"
+                            android:layout_marginEnd="4dp"/>
+
+                    </LinearLayout>
+
+                    <!-- Row 2: GPS MSM -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="90dp"
+                            android:layout_height="wrap_content"
+                            android:text="GPS MSM"
+                            android:textColor="#4CAF50"
+                            android:textSize="12sp"/>
+
+                        <EditText
+                            android:id="@+id/hzGps"
+                            android:layout_width="48dp"
+                            android:layout_height="32dp"
+                            android:text="1"
+                            android:textColor="#ffffff"
+                            android:textSize="12sp"
+                            android:inputType="numberDecimal"
+                            android:gravity="center"
+                            android:background="#1a1a2e"
+                            android:padding="4dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=" Hz"
+                            android:textColor="#666666"
+                            android:textSize="11sp"/>
+
+                        <TextView
+                            android:id="@+id/cntGps"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="0"
+                            android:textColor="#666666"
+                            android:textSize="11sp"
+                            android:gravity="end"
+                            android:layout_marginEnd="4dp"/>
+
+                    </LinearLayout>
+
+                    <!-- Row 3: GLONASS MSM -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="90dp"
+                            android:layout_height="wrap_content"
+                            android:text="GLO MSM"
+                            android:textColor="#FF9800"
+                            android:textSize="12sp"/>
+
+                        <EditText
+                            android:id="@+id/hzGlo"
+                            android:layout_width="48dp"
+                            android:layout_height="32dp"
+                            android:text="1"
+                            android:textColor="#ffffff"
+                            android:textSize="12sp"
+                            android:inputType="numberDecimal"
+                            android:gravity="center"
+                            android:background="#1a1a2e"
+                            android:padding="4dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=" Hz"
+                            android:textColor="#666666"
+                            android:textSize="11sp"/>
+
+                        <TextView
+                            android:id="@+id/cntGlo"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="0"
+                            android:textColor="#666666"
+                            android:textSize="11sp"
+                            android:gravity="end"
+                            android:layout_marginEnd="4dp"/>
+
+                    </LinearLayout>
+
+                    <!-- Row 4: Galileo MSM -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="90dp"
+                            android:layout_height="wrap_content"
+                            android:text="GAL MSM"
+                            android:textColor="#2196F3"
+                            android:textSize="12sp"/>
+
+                        <EditText
+                            android:id="@+id/hzGal"
+                            android:layout_width="48dp"
+                            android:layout_height="32dp"
+                            android:text="1"
+                            android:textColor="#ffffff"
+                            android:textSize="12sp"
+                            android:inputType="numberDecimal"
+                            android:gravity="center"
+                            android:background="#1a1a2e"
+                            android:padding="4dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=" Hz"
+                            android:textColor="#666666"
+                            android:textSize="11sp"/>
+
+                        <TextView
+                            android:id="@+id/cntGal"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="0"
+                            android:textColor="#666666"
+                            android:textSize="11sp"
+                            android:gravity="end"
+                            android:layout_marginEnd="4dp"/>
+
+                    </LinearLayout>
+
+                    <!-- Row 5: BeiDou MSM -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="4dp">
+
+                        <TextView
+                            android:layout_width="90dp"
+                            android:layout_height="wrap_content"
+                            android:text="BDS MSM"
+                            android:textColor="#E91E63"
+                            android:textSize="12sp"/>
+
+                        <EditText
+                            android:id="@+id/hzBds"
+                            android:layout_width="48dp"
+                            android:layout_height="32dp"
+                            android:text="1"
+                            android:textColor="#ffffff"
+                            android:textSize="12sp"
+                            android:inputType="numberDecimal"
+                            android:gravity="center"
+                            android:background="#1a1a2e"
+                            android:padding="4dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=" Hz"
+                            android:textColor="#666666"
+                            android:textSize="11sp"/>
+
+                        <TextView
+                            android:id="@+id/cntBds"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="0"
+                            android:textColor="#666666"
+                            android:textSize="11sp"
+                            android:gravity="end"
+                            android:layout_marginEnd="4dp"/>
+
+                    </LinearLayout>
+
+                    <!-- Row 6: GLONASS Bias -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="90dp"
+                            android:layout_height="wrap_content"
+                            android:text="1230 Bias"
+                            android:textColor="#9C27B0"
+                            android:textSize="12sp"/>
+
+                        <EditText
+                            android:id="@+id/hzBias"
+                            android:layout_width="48dp"
+                            android:layout_height="32dp"
+                            android:text="0.2"
+                            android:textColor="#ffffff"
+                            android:textSize="12sp"
+                            android:inputType="numberDecimal"
+                            android:gravity="center"
+                            android:background="#1a1a2e"
+                            android:padding="4dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text=" Hz"
+                            android:textColor="#666666"
+                            android:textSize="11sp"/>
+
+                        <TextView
+                            android:id="@+id/cntBias"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="0"
+                            android:textColor="#666666"
+                            android:textSize="11sp"
+                            android:gravity="end"
+                            android:layout_marginEnd="4dp"/>
+
+                    </LinearLayout>
+
+                </LinearLayout>
+
                 <!-- Deeper WiFi Section -->
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -532,6 +1117,264 @@
                 android:layout_marginTop="16dp"/>
 
         </LinearLayout>
+
+
+        <!-- Navigation Tab Content -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <!-- View toggle between 3D and 2D -->
+            <ViewFlipper
+                android:id="@+id/navViewFlipper"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent">
+
+                <!-- 3D Point Cloud View -->
+                <com.deeperrtk.remote.PointCloudGLSurfaceView
+                    android:id="@+id/pointCloudView"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"/>
+
+                <!-- 2D Map View with Color Scale Bar -->
+                <FrameLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent">
+
+                    <org.osmdroid.views.MapView
+                        android:id="@+id/mapView"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"/>
+
+                    <!-- Map Layer Button and Color Scale Bar on right side -->
+                    <LinearLayout
+                        android:id="@+id/colorScaleContainer"
+                        android:layout_width="50dp"
+                        android:layout_height="wrap_content"
+                        android:layout_gravity="end|center_vertical"
+                        android:layout_marginEnd="8dp"
+                        android:orientation="vertical"
+                        android:background="#80000000"
+                        android:padding="4dp">
+
+                        <!-- Offline mode toggle button -->
+                        <Button
+                            android:id="@+id/btnOfflineMode"
+                            android:layout_width="42dp"
+                            android:layout_height="32dp"
+                            android:text="Online"
+                            android:textSize="8sp"
+                            android:textAllCaps="false"
+                            android:backgroundTint="#4CAF50"
+                            android:layout_gravity="center_horizontal"
+                            android:layout_marginBottom="4dp"
+                            android:padding="0dp"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"/>
+
+                        <!-- Map layer toggle button -->
+                        <Button
+                            android:id="@+id/btnMapLayer"
+                            android:layout_width="42dp"
+                            android:layout_height="32dp"
+                            android:text="Topo"
+                            android:textSize="9sp"
+                            android:textAllCaps="false"
+                            android:backgroundTint="#444444"
+                            android:layout_gravity="center_horizontal"
+                            android:layout_marginBottom="4dp"
+                            android:padding="0dp"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"/>
+
+                        <!-- Offline map download button -->
+                        <Button
+                            android:id="@+id/btnOfflineMap"
+                            android:layout_width="42dp"
+                            android:layout_height="32dp"
+                            android:text="Save"
+                            android:textSize="8sp"
+                            android:textAllCaps="false"
+                            android:backgroundTint="#2196F3"
+                            android:layout_gravity="center_horizontal"
+                            android:layout_marginBottom="8dp"
+                            android:padding="0dp"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"/>
+
+                        <!-- Max value label -->
+                        <TextView
+                            android:id="@+id/colorScaleMaxLabel"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="0m"
+                            android:textColor="#ffffff"
+                            android:textSize="10sp"
+                            android:gravity="center"/>
+
+                        <!-- Gradient bar -->
+                        <View
+                            android:id="@+id/colorScaleBar"
+                            android:layout_width="20dp"
+                            android:layout_height="120dp"
+                            android:layout_gravity="center_horizontal"
+                            android:layout_marginVertical="4dp"
+                            android:background="@drawable/depth_gradient"/>
+
+                        <!-- Min value label -->
+                        <TextView
+                            android:id="@+id/colorScaleMinLabel"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="10m"
+                            android:textColor="#ffffff"
+                            android:textSize="10sp"
+                            android:gravity="center"/>
+
+                        <!-- Mode label -->
+                        <TextView
+                            android:id="@+id/colorScaleModeLabel"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Depth"
+                            android:textColor="#00bcd4"
+                            android:textSize="9sp"
+                            android:gravity="center"
+                            android:layout_marginTop="4dp"/>
+
+                    </LinearLayout>
+
+                </FrameLayout>
+
+            </ViewFlipper>
+
+            <!-- Toggle buttons overlay -->
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:orientation="horizontal"
+                android:layout_marginTop="8dp"
+                android:background="#80000000"
+                android:padding="4dp">
+
+                <Button
+                    android:id="@+id/btn3DView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="3D"
+                    android:textSize="12sp"
+                    android:backgroundTint="#00bcd4"
+                    android:layout_marginEnd="4dp"/>
+
+                <Button
+                    android:id="@+id/btn2DView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="2D"
+                    android:textSize="12sp"
+                    android:backgroundTint="#666666"/>
+
+                <!-- Spacer -->
+                <View
+                    android:layout_width="16dp"
+                    android:layout_height="1dp"/>
+
+                <!-- Depth/Heat Map Toggle -->
+                <Button
+                    android:id="@+id/btnDepthMap"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="Depth"
+                    android:textSize="11sp"
+                    android:backgroundTint="#00bcd4"
+                    android:layout_marginEnd="4dp"/>
+
+                <Button
+                    android:id="@+id/btnHeatMap"
+                    android:layout_width="wrap_content"
+                    android:layout_height="36dp"
+                    android:text="Heat"
+                    android:textSize="11sp"
+                    android:backgroundTint="#666666"/>
+
+            </LinearLayout>
+
+            <!-- Status bar at bottom -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom"
+                android:orientation="vertical"
+                android:background="#CC16213e"
+                android:padding="8dp">
+
+                <!-- Position row -->
+                <TextView
+                    android:id="@+id/navPositionText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Position: ---, ---"
+                    android:textColor="#ffffff"
+                    android:textSize="14sp"
+                    android:fontFamily="monospace"/>
+
+                <!-- Depth and points row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="4dp">
+
+                    <TextView
+                        android:id="@+id/navDepthText"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Depth: -- m"
+                        android:textColor="#00bcd4"
+                        android:textSize="14sp"/>
+
+                    <TextView
+                        android:id="@+id/navPointsText"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Points: 0"
+                        android:textColor="#888888"
+                        android:textSize="14sp"/>
+
+                </LinearLayout>
+
+                <!-- Action buttons -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center">
+
+                    <Button
+                        android:id="@+id/navClearButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:text="Clear"
+                        android:textSize="12sp"
+                        android:backgroundTint="#f44336"
+                        android:layout_marginEnd="8dp"/>
+
+                    <Button
+                        android:id="@+id/navExportButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:text="Export CSV"
+                        android:textSize="12sp"
+                        android:backgroundTint="#4caf50"/>
+
+                </LinearLayout>
+
+            </LinearLayout>
+
+        </FrameLayout>
 
     </ViewFlipper>
 

@@ -30,6 +30,18 @@ import android.app.AlertDialog
 import android.os.Environment
 import java.io.File
 import java.io.FileOutputStream
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.tileprovider.tilesource.XYTileSource
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polyline
+import org.osmdroid.views.overlay.Polygon
+import android.graphics.Color
+import android.graphics.Paint
+import android.content.Intent
+import android.preference.PreferenceManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -64,6 +76,38 @@ class MainActivity : AppCompatActivity() {
     private var isConnected = false
     private var isScanning = false
     private var isRecording = false
+    private var isRadioLinkMode = false
+
+    // NTRIP Client state
+    private var isNtripConnected = false
+    private var ntripSocket: java.net.Socket? = null
+    private var ntripThread: Thread? = null
+    private var rtcmBytesSent = 0L
+    private var rtcmMessagesReceived = 0L
+
+    // RTCM message counters
+    private var cntStation = 0L
+    private var cntGps = 0L
+    private var cntGlo = 0L
+    private var cntGal = 0L
+    private var cntBds = 0L
+    private var cntBias = 0L
+
+    // RTCM rate limits (Hz, 0 = disabled)
+    private var hzStation = 0.1
+    private var hzGps = 1.0
+    private var hzGlo = 1.0
+    private var hzGal = 1.0
+    private var hzBds = 1.0
+    private var hzBias = 0.2
+
+    // Last send times for rate limiting
+    private var lastStationTime = 0L
+    private var lastGpsTime = 0L
+    private var lastGloTime = 0L
+    private var lastGalTime = 0L
+    private var lastBdsTime = 0L
+    private var lastBiasTime = 0L
 
     private val handler = Handler(Looper.getMainLooper())
     private val lineBuffer = StringBuilder()
@@ -97,6 +141,17 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stopButton: Button
     private lateinit var sonarGLView: SonarGLSurfaceView
 
+    // UI Elements - NTRIP
+    private lateinit var ntripHost: EditText
+    private lateinit var ntripPort: EditText
+    private lateinit var ntripMountpoint: EditText
+    private lateinit var ntripUsername: EditText
+    private lateinit var ntripPassword: EditText
+    private lateinit var ntripConnectButton: Button
+    private lateinit var ntripIndicator: View
+    private lateinit var ntripStatus: TextView
+    private lateinit var ntripStats: TextView
+
     // UI Elements - Config Tab
     private lateinit var deeperSsidInput: EditText
     private lateinit var enableNmeaButton: Button
@@ -119,6 +174,31 @@ class MainActivity : AppCompatActivity() {
     private var downloadFileName = ""
     private val downloadBuffer = StringBuilder()
 
+    // Navigation Tab UI
+    private lateinit var navViewFlipper: ViewFlipper
+    private lateinit var mapView: MapView
+    private lateinit var pointCloudView: PointCloudGLSurfaceView
+    private lateinit var btn3DView: Button
+    private lateinit var btn2DView: Button
+    private lateinit var btnDepthMap: Button
+    private lateinit var btnHeatMap: Button
+    private lateinit var btnMapLayer: Button
+    private lateinit var btnOfflineMode: Button
+    private lateinit var btnOfflineMap: Button
+    private lateinit var navPositionText: TextView
+    private lateinit var navDepthText: TextView
+    private lateinit var navPointsText: TextView
+    private lateinit var navClearButton: Button
+    private lateinit var navExportButton: Button
+    private lateinit var colorScaleMaxLabel: TextView
+    private lateinit var colorScaleMinLabel: TextView
+    private lateinit var colorScaleModeLabel: TextView
+    private var currentPositionMarker: Marker? = null
+    private var trackPolyline: Polyline? = null
+    private val depthPointOverlays = mutableListOf<Polygon>()
+    private var isHeatMapMode = false
+    private var currentMapLayer = 0  // 0=OSM, 1=Topo, 2=Satellite
+
     // BLE Scan callback
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -128,8 +208,24 @@ class MainActivity : AppCompatActivity() {
                 val serviceUuids = result.scanRecord?.serviceUuids
                 val hasOurService = serviceUuids?.any { it.uuid == SERVICE_UUID } == true
 
-                if (deviceName?.contains("DeeperRTK", ignoreCase = true) == true || hasOurService) {
-                    android.util.Log.d("DeeperRTK", "Found device: $deviceName, hasService: $hasOurService")
+                // Debug log: show all devices with our service or "Deep" in name
+                if (deviceName?.contains("Deep", ignoreCase = true) == true || hasOurService) {
+                    android.util.Log.d("BLE_SCAN", "Seen: '$deviceName' hasService=$hasOurService addr=${device.address}")
+                }
+
+                // Device matching based on connection mode
+                // Radio Link mode: Shore Station (name contains "Shore" OR null-named device with our service)
+                // Direct mode: B-Box only (name contains "DeeperRTK" but NOT "Shore")
+                val isShoreStation = deviceName?.contains("Shore", ignoreCase = true) == true
+                val isBBox = deviceName?.contains(DEVICE_NAME, ignoreCase = true) == true && !isShoreStation
+                val matchesTarget = if (isRadioLinkMode) {
+                    isShoreStation || (hasOurService && deviceName == null)
+                } else {
+                    isBBox
+                }
+
+                if (matchesTarget) {
+                    android.util.Log.d("DeeperRTK", "MATCH! device: $deviceName, radioLinkMode: $isRadioLinkMode")
                     stopScan()
                     connectToDevice(device)
                 }
@@ -213,7 +309,7 @@ class MainActivity : AppCompatActivity() {
 
         override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                handler.post { Toast.makeText(this@MainActivity, "Write failed", Toast.LENGTH_SHORT).show() }
+                android.util.Log.e("DeeperRTK", "BLE write failed with status $status")
             }
         }
 
@@ -238,6 +334,31 @@ class MainActivity : AppCompatActivity() {
 
         // Remote tab elements
         connectButton = findViewById(R.id.connectButton)
+
+        // Connection mode buttons
+        val btnDirectMode = findViewById<Button>(R.id.btnDirectMode)
+        val btnRadioMode = findViewById<Button>(R.id.btnRadioMode)
+        val radioModeIndicator = findViewById<View>(R.id.radioModeIndicator)
+        val radioModeStatus = findViewById<TextView>(R.id.radioModeStatus)
+
+        btnDirectMode.setOnClickListener {
+            isRadioLinkMode = false
+            btnDirectMode.isSelected = true
+            btnRadioMode.isSelected = false
+            radioModeIndicator.setBackgroundResource(R.drawable.indicator_gray)
+            radioModeStatus.text = "Direct BLE"
+        }
+
+        btnRadioMode.setOnClickListener {
+            isRadioLinkMode = true
+            btnDirectMode.isSelected = false
+            btnRadioMode.isSelected = true
+            radioModeIndicator.setBackgroundResource(R.drawable.indicator_float)
+            radioModeStatus.text = "Radio Link"
+        }
+
+        // Default to direct mode
+        btnDirectMode.isSelected = true
         connectionIndicator = findViewById(R.id.connectionIndicator)
         connectionStatus = findViewById(R.id.connectionStatus)
         fixIndicator = findViewById(R.id.fixIndicator)
@@ -266,10 +387,26 @@ class MainActivity : AppCompatActivity() {
 
         levelButton.setOnClickListener { calibrateIMU() }
 
+        // NTRIP UI bindings
+        ntripHost = findViewById(R.id.ntripHost)
+        ntripPort = findViewById(R.id.ntripPort)
+        ntripMountpoint = findViewById(R.id.ntripMountpoint)
+        ntripUsername = findViewById(R.id.ntripUsername)
+        ntripPassword = findViewById(R.id.ntripPassword)
+        ntripConnectButton = findViewById(R.id.ntripConnectButton)
+        ntripIndicator = findViewById(R.id.ntripIndicator)
+        ntripStatus = findViewById(R.id.ntripStatus)
+        ntripStats = findViewById(R.id.ntripStats)
+
+        ntripConnectButton.setOnClickListener {
+            if (isNtripConnected) disconnectNtrip() else connectNtrip()
+        }
+
         // Set up tabs
         tabLayout.addTab(tabLayout.newTab().setText("Remote"))
         tabLayout.addTab(tabLayout.newTab().setText("Config"))
         tabLayout.addTab(tabLayout.newTab().setText("Logs"))
+        tabLayout.addTab(tabLayout.newTab().setText("Nav"))
 
         tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
             override fun onTabSelected(tab: TabLayout.Tab) {
@@ -319,6 +456,310 @@ class MainActivity : AppCompatActivity() {
                 downloadLog(logFiles[position].name)
             }
         }
+
+        // Navigation Tab bindings
+        initNavigationTab()
+    }
+
+    private fun initNavigationTab() {
+        // Initialize OSMdroid configuration
+        Configuration.getInstance().load(applicationContext,
+            PreferenceManager.getDefaultSharedPreferences(applicationContext))
+        Configuration.getInstance().userAgentValue = "DeeperRTK/1.0"
+
+        navViewFlipper = findViewById(R.id.navViewFlipper)
+        mapView = findViewById(R.id.mapView)
+        pointCloudView = findViewById(R.id.pointCloudView)
+        btn3DView = findViewById(R.id.btn3DView)
+        btn2DView = findViewById(R.id.btn2DView)
+        btnDepthMap = findViewById(R.id.btnDepthMap)
+        btnHeatMap = findViewById(R.id.btnHeatMap)
+        btnMapLayer = findViewById(R.id.btnMapLayer)
+        btnOfflineMode = findViewById(R.id.btnOfflineMode)
+        btnOfflineMap = findViewById(R.id.btnOfflineMap)
+        navPositionText = findViewById(R.id.navPositionText)
+        navDepthText = findViewById(R.id.navDepthText)
+        navPointsText = findViewById(R.id.navPointsText)
+        navClearButton = findViewById(R.id.navClearButton)
+        navExportButton = findViewById(R.id.navExportButton)
+        colorScaleMaxLabel = findViewById(R.id.colorScaleMaxLabel)
+        colorScaleMinLabel = findViewById(R.id.colorScaleMinLabel)
+        colorScaleModeLabel = findViewById(R.id.colorScaleModeLabel)
+
+        // Initialize map with Esri satellite imagery as default
+        val defaultEsri = object : XYTileSource("Esri", 0, 17, 256, "",
+            arrayOf("https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/")) {
+            override fun getTileURLString(pMapTileIndex: Long): String {
+                val z = org.osmdroid.util.MapTileIndex.getZoom(pMapTileIndex)
+                val x = org.osmdroid.util.MapTileIndex.getX(pMapTileIndex)
+                val y = org.osmdroid.util.MapTileIndex.getY(pMapTileIndex)
+                return baseUrl + z + "/" + y + "/" + x
+            }
+        }
+        mapView.setTileSource(defaultEsri)
+        mapView.setMultiTouchControls(true)
+        mapView.controller.setZoom(15.0)
+        
+        // Enable overzoom to allow zooming in beyond tile resolution (for 1m scale viewing)
+        mapView.setMinZoomLevel(4.0)
+        mapView.setMaxZoomLevel(24.0)  // Allow zoom to ~4cm scale
+        mapView.isTilesScaledToDpi = true
+        currentMapLayer = 2  // Start on satellite
+        btnMapLayer.text = "Sat"
+
+        // Create track polyline
+        trackPolyline = Polyline().apply {
+            outlinePaint.color = Color.CYAN
+            outlinePaint.strokeWidth = 3f
+        }
+        mapView.overlays.add(trackPolyline)
+
+        // 3D/2D view toggle
+        btn3DView.setOnClickListener {
+            navViewFlipper.displayedChild = 0
+            btn3DView.setBackgroundColor(0xFF00bcd4.toInt())
+            btn2DView.setBackgroundColor(0xFF666666.toInt())
+        }
+        btn2DView.setOnClickListener {
+            navViewFlipper.displayedChild = 1
+            btn3DView.setBackgroundColor(0xFF666666.toInt())
+            btn2DView.setBackgroundColor(0xFF00bcd4.toInt())
+        }
+
+        // Depth/Heat map toggle
+        btnDepthMap.setOnClickListener {
+            isHeatMapMode = false
+            btnDepthMap.setBackgroundColor(0xFF00bcd4.toInt())
+            btnHeatMap.setBackgroundColor(0xFF666666.toInt())
+            colorScaleModeLabel.text = "Depth"
+            updateColorScale()
+            refreshMapOverlays()
+        }
+        btnHeatMap.setOnClickListener {
+            isHeatMapMode = true
+            btnDepthMap.setBackgroundColor(0xFF666666.toInt())
+            btnHeatMap.setBackgroundColor(0xFF00bcd4.toInt())
+            colorScaleModeLabel.text = "Temp"
+            updateColorScale()
+            refreshMapOverlays()
+        }
+
+        // Map layer toggle
+        btnMapLayer.setOnClickListener {
+            currentMapLayer = (currentMapLayer + 1) % 3
+            when (currentMapLayer) {
+                0 -> {
+                    mapView.setTileSource(TileSourceFactory.MAPNIK)
+                    btnMapLayer.text = "OSM"
+                }
+                1 -> {
+                    mapView.setTileSource(TileSourceFactory.OpenTopo)
+                    btnMapLayer.text = "Topo"
+                }
+                2 -> {
+                    // Esri World Imagery (max zoom 17 for reliable coverage)
+                    val esri = object : XYTileSource("Esri", 0, 17, 256, "",
+                        arrayOf("https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/")) {
+                        override fun getTileURLString(pMapTileIndex: Long): String {
+                            val z = org.osmdroid.util.MapTileIndex.getZoom(pMapTileIndex)
+                            val x = org.osmdroid.util.MapTileIndex.getX(pMapTileIndex)
+                            val y = org.osmdroid.util.MapTileIndex.getY(pMapTileIndex)
+                            return baseUrl + z + "/" + y + "/" + x
+                        }
+                    }
+                    mapView.setTileSource(esri)
+                    btnMapLayer.text = "Sat"
+                }
+            }
+        }
+
+        // Clear button
+        navClearButton.setOnClickListener {
+            TrackManager.clear()
+            trackPolyline?.setPoints(ArrayList<GeoPoint>())
+            currentPositionMarker?.let { mapView.overlays.remove(it) }
+            currentPositionMarker = null
+            // Remove all depth point circles
+            for (overlay in depthPointOverlays) {
+                mapView.overlays.remove(overlay)
+            }
+            depthPointOverlays.clear()
+            mapView.invalidate()
+            pointCloudView.clearPoints()
+            navPointsText.text = "Points: 0"
+            navPositionText.text = "Position: ---, ---"
+            navDepthText.text = "Depth: -- m"
+            Toast.makeText(this, "Track cleared", Toast.LENGTH_SHORT).show()
+        }
+
+        // Save offline tiles button
+        btnOfflineMap.setOnClickListener {
+            Toast.makeText(this, "Downloading tiles for current area...", Toast.LENGTH_SHORT).show()
+            thread {
+                try {
+                    val cacheManager = org.osmdroid.tileprovider.cachemanager.CacheManager(mapView)
+                    val bounds = mapView.boundingBox
+                    val zoomMin = mapView.zoomLevelDouble.toInt().coerceAtLeast(10)
+                    val zoomMax = (zoomMin + 4).coerceAtMost(18)
+                    cacheManager.downloadAreaAsync(this, bounds, zoomMin, zoomMax,
+                        object : org.osmdroid.tileprovider.cachemanager.CacheManager.CacheManagerCallback {
+                            override fun onTaskComplete() {
+                                handler.post { Toast.makeText(this@MainActivity, "Tiles saved!", Toast.LENGTH_SHORT).show() }
+                            }
+                            override fun onTaskFailed(errors: Int) {
+                                handler.post { Toast.makeText(this@MainActivity, "Failed: $errors errors", Toast.LENGTH_SHORT).show() }
+                            }
+                            override fun updateProgress(progress: Int, currentZoomLevel: Int, zMin: Int, zMax: Int) {
+                                handler.post { btnOfflineMap.text = "$progress%" }
+                            }
+                            override fun downloadStarted() { handler.post { btnOfflineMap.text = "0%" } }
+                            override fun setPossibleTilesInArea(total: Int) {}
+                        })
+                } catch (e: Exception) {
+                    handler.post { Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_SHORT).show() }
+                }
+            }
+        }
+
+        // Export button
+        navExportButton.setOnClickListener {
+            val file = TrackManager.exportToCSV()
+            if (file != null) {
+                Toast.makeText(this, "Exported to Downloads/${file.name}", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(this, "No points to export", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        // Offline mode toggle
+        btnOfflineMode.setOnClickListener {
+            if (btnOfflineMode.text == "Online") {
+                mapView.setUseDataConnection(false)
+                btnOfflineMode.text = "Offline"
+                btnOfflineMode.setBackgroundColor(0xFF2196F3.toInt())
+            } else {
+                mapView.setUseDataConnection(true)
+                btnOfflineMode.text = "Online"
+                btnOfflineMode.setBackgroundColor(0xFF4CAF50.toInt())
+            }
+        }
+
+        // Start with 2D map view
+        navViewFlipper.displayedChild = 1
+        btn3DView.setBackgroundColor(0xFF666666.toInt())
+        btn2DView.setBackgroundColor(0xFF00bcd4.toInt())
+
+        // Listen for new depth points
+        TrackManager.addListener { point ->
+            handler.post {
+                addPointToMap(point)
+                pointCloudView.addPoint(point)
+                navPointsText.text = "Points: ${TrackManager.getPointCount()}"
+            }
+        }
+    }
+
+    private fun updateColorScale() {
+        if (isHeatMapMode) {
+            val (minT, maxT) = TrackManager.getTemperatureRange()
+            colorScaleMaxLabel.text = String.format("%.0f\u00B0", minT)
+            colorScaleMinLabel.text = String.format("%.0f\u00B0", maxT)
+        } else {
+            val (minD, maxD) = TrackManager.getDepthRange()
+            colorScaleMaxLabel.text = String.format("%.1fm", minD)
+            colorScaleMinLabel.text = String.format("%.1fm", maxD)
+        }
+    }
+
+    private fun addPointToMap(point: DepthPoint) {
+        // Use IMU-corrected bottom position if available, otherwise transducer position
+        val lat = if (point.bottomLat != 0.0) point.bottomLat else point.latitude
+        val lon = if (point.bottomLon != 0.0) point.bottomLon else point.longitude
+        val geoPoint = GeoPoint(lat, lon)
+        
+        // Transducer position for current marker (where the boat is)
+        val transducerPoint = GeoPoint(point.latitude, point.longitude)
+
+        if (currentPositionMarker == null) {
+            currentPositionMarker = Marker(mapView).apply {
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                title = "Current Position"
+            }
+            mapView.overlays.add(currentPositionMarker)
+            // Center map on first point
+            mapView.controller.setCenter(transducerPoint)
+        }
+        currentPositionMarker?.position = transducerPoint  // Marker shows boat position
+
+        // Add to track polyline
+        trackPolyline?.addPoint(geoPoint)
+
+        // Add colored depth point circle
+        val color = if (isHeatMapMode) {
+            val (minT, maxT) = TrackManager.getTemperatureRange()
+            val range = (maxT - minT).coerceAtLeast(1f)
+            val t = ((point.temperature - minT) / range).coerceIn(0f, 1f)
+            temperatureToColor(t)
+        } else {
+            val (minD, maxD) = TrackManager.getDepthRange()
+            val range = (maxD - minD).coerceAtLeast(1f)
+            val t = ((point.depth - minD) / range).coerceIn(0f, 1f)
+            depthToColor(t)
+        }
+
+        val circle = Polygon(mapView).apply {
+            points = Polygon.pointsAsCircle(geoPoint, 0.05)  // 5cm radius (10cm diameter)
+            fillPaint.color = color
+            fillPaint.style = Paint.Style.FILL
+            outlinePaint.color = color
+            outlinePaint.strokeWidth = 1f
+        }
+        depthPointOverlays.add(circle)
+        mapView.overlays.add(circle)
+
+        // Update nav display
+        navPositionText.text = String.format("Pos: %.6f, %.6f", point.latitude, point.longitude)
+        navDepthText.text = String.format("Depth: %.2f m", point.depth)
+
+        mapView.invalidate()
+    }
+
+    private fun depthToColor(t: Float): Int {
+        // Gradient: blue -> cyan -> green -> yellow -> red
+        val r: Int
+        val g: Int
+        val b: Int
+        when {
+            t < 0.25f -> {
+                val s = t / 0.25f
+                r = 0; g = (s * 255).toInt(); b = 255
+            }
+            t < 0.5f -> {
+                val s = (t - 0.25f) / 0.25f
+                r = 0; g = 255; b = (255 * (1 - s)).toInt()
+            }
+            t < 0.75f -> {
+                val s = (t - 0.5f) / 0.25f
+                r = (s * 255).toInt(); g = 255; b = 0
+            }
+            else -> {
+                val s = (t - 0.75f) / 0.25f
+                r = 255; g = (255 * (1 - s)).toInt(); b = 0
+            }
+        }
+        return Color.argb(200, r, g, b)
+    }
+
+    private fun temperatureToColor(t: Float): Int {
+        // Cold (blue) to hot (red)
+        val r = (t * 255).toInt()
+        val b = ((1 - t) * 255).toInt()
+        return Color.argb(200, r, 50, b)
+    }
+
+    private fun refreshMapOverlays() {
+        // Rebuild overlays with current color mode
+        mapView.invalidate()
     }
 
     private fun calibrateIMU() {
@@ -589,6 +1030,27 @@ class MainActivity : AppCompatActivity() {
 
         isRecording = recording
         recordingIndicator.setBackgroundResource(if (recording) R.drawable.indicator_red else R.drawable.indicator_disconnected)
+
+        // Add point to TrackManager for navigation tab
+        // Filter out (0,0) = Africa (no GPS fix), require 4+ sats and valid ranges
+        val validGps = lat != 0.0 && lon != 0.0 && 
+                       lat > -90 && lat < 90 && 
+                       lon > -180 && lon < 180 &&
+                       sats >= 4
+        if (validGps && depth > 0) {
+            val depthPoint = DepthPoint(
+                timestamp = System.currentTimeMillis(),
+                latitude = lat,
+                longitude = lon,
+                depth = depth,
+                temperature = temp,
+                pitch = pitch,
+                roll = roll,
+                fix = fix,
+                satellites = sats
+            )
+            TrackManager.addPoint(depthPoint)
+        }
     }
 
 
@@ -727,9 +1189,265 @@ class MainActivity : AppCompatActivity() {
         downloadBuffer.clear()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (::mapView.isInitialized) {
+            mapView.onResume()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (::mapView.isInitialized) {
+            mapView.onPause()
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacks(pollRunnable)
         disconnect()
     }
+
+    // ========== NTRIP CLIENT ==========
+    private fun connectNtrip() {
+        val host = ntripHost.text.toString().trim()
+        val port = ntripPort.text.toString().toIntOrNull() ?: 2101
+        val mountpoint = ntripMountpoint.text.toString().trim()
+        val username = ntripUsername.text.toString()
+        val password = ntripPassword.text.toString()
+
+        if (host.isEmpty() || mountpoint.isEmpty()) {
+            Toast.makeText(this, "Enter host and mountpoint", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        ntripConnectButton.isEnabled = false
+        ntripStatus.text = "Connecting..."
+        ntripIndicator.setBackgroundResource(R.drawable.indicator_gps)
+
+        ntripThread = Thread {
+            try {
+                ntripSocket = java.net.Socket(host, port)
+                ntripSocket!!.soTimeout = 30000
+
+                val output = ntripSocket!!.getOutputStream()
+                val input = java.io.BufferedInputStream(ntripSocket!!.getInputStream())
+
+                // Send NTRIP request
+                val auth = android.util.Base64.encodeToString(
+                    "$username:$password".toByteArray(), android.util.Base64.NO_WRAP
+                )
+                val request = "GET /$mountpoint HTTP/1.1\r\n" +
+                    "Host: $host\r\n" +
+                    "Ntrip-Version: Ntrip/2.0\r\n" +
+                    "User-Agent: DeeperRTK/1.0\r\n" +
+                    "Authorization: Basic $auth\r\n" +
+                    "\r\n"
+                output.write(request.toByteArray())
+                output.flush()
+
+                // Read response header
+                val headerBuffer = StringBuilder()
+                var b: Int
+                while (input.read().also { b = it } != -1) {
+                    headerBuffer.append(b.toChar())
+                    if (headerBuffer.endsWith("\r\n\r\n")) break
+                }
+                val header = headerBuffer.toString()
+
+                if (!header.contains("200 OK") && !header.contains("ICY 200 OK")) {
+                    val errorMsg = if (header.contains("401")) "Auth failed"
+                                   else if (header.contains("404")) "Mountpoint not found"
+                                   else "Connection rejected"
+                    handler.post {
+                        ntripStatus.text = errorMsg
+                        ntripIndicator.setBackgroundResource(R.drawable.indicator_red)
+                        ntripConnectButton.isEnabled = true
+                    }
+                    ntripSocket?.close()
+                    return@Thread
+                }
+
+                isNtripConnected = true
+                handler.post {
+                    ntripStatus.text = "Connected"
+                    ntripIndicator.setBackgroundResource(R.drawable.indicator_green)
+                    ntripConnectButton.text = "Disconnect"
+                    ntripConnectButton.isEnabled = true
+                }
+
+                // Read RTCM data
+                val buffer = ByteArray(4096)
+                val rtcmBuffer = mutableListOf<Byte>()
+
+                while (isNtripConnected && !Thread.currentThread().isInterrupted) {
+                    val len = input.read(buffer)
+                    if (len <= 0) break
+
+                    for (i in 0 until len) {
+                        rtcmBuffer.add(buffer[i])
+                    }
+
+                    // Process complete RTCM messages
+                    processRtcmBuffer(rtcmBuffer)
+
+                    // Update stats
+                    handler.post {
+                        ntripStats.text = "RTCM: $rtcmMessagesReceived msgs, ${rtcmBytesSent/1024}KB sent"
+                    }
+                }
+            } catch (e: Exception) {
+                val wasConnected = isNtripConnected
+                handler.post {
+                    if (!wasConnected) {
+                        ntripStatus.text = e.message ?: "Connection failed"
+                    } else {
+                        ntripStatus.text = "Disconnected"
+                    }
+                    ntripIndicator.setBackgroundResource(R.drawable.indicator_gray)
+                    ntripConnectButton.text = "Connect"
+                    ntripConnectButton.isEnabled = true
+                }
+            } finally {
+                isNtripConnected = false
+                try { ntripSocket?.close() } catch (ex: Exception) {}
+                ntripSocket = null
+            }
+        }
+        ntripThread?.start()
+    }
+
+    private fun disconnectNtrip() {
+        isNtripConnected = false
+        try { ntripSocket?.close() } catch (e: Exception) {}
+        ntripSocket = null
+        ntripThread?.interrupt()
+        ntripThread = null
+
+        ntripStatus.text = "Disconnected"
+        ntripIndicator.setBackgroundResource(R.drawable.indicator_gray)
+        ntripConnectButton.text = "Connect"
+        ntripConnectButton.isEnabled = true
+    }
+
+    private fun processRtcmBuffer(buffer: MutableList<Byte>) {
+        while (buffer.size >= 6) {
+            // Look for RTCM preamble
+            if (buffer[0] != 0xD3.toByte()) {
+                buffer.removeAt(0)
+                continue
+            }
+
+            // Get message length
+            val len = ((buffer[1].toInt() and 0x03) shl 8) or (buffer[2].toInt() and 0xFF)
+            val totalLen = len + 6  // header(3) + data + CRC(3)
+
+            if (buffer.size < totalLen) break  // Need more data
+
+            // Extract message
+            val message = buffer.subList(0, totalLen).toByteArray()
+            repeat(totalLen) { buffer.removeAt(0) }
+
+            // Get message type
+            val msgType = ((message[3].toInt() and 0xFF) shl 4) or ((message[4].toInt() and 0xF0) shr 4)
+
+            rtcmMessagesReceived++
+
+            // Update counters and check rate limits
+            if (shouldSendMessage(msgType)) {
+                sendRtcmToDevice(message)
+            }
+        }
+    }
+
+    private fun shouldSendMessage(msgType: Int): Boolean {
+        val now = System.currentTimeMillis()
+
+        return when (msgType) {
+            1005, 1006 -> {
+                val interval = if (hzStation > 0) (1000.0 / hzStation).toLong() else Long.MAX_VALUE
+                if (now - lastStationTime >= interval) {
+                    lastStationTime = now
+                    cntStation++
+                    true
+                } else false
+            }
+            in 1071..1077 -> {
+                val interval = if (hzGps > 0) (1000.0 / hzGps).toLong() else Long.MAX_VALUE
+                if (now - lastGpsTime >= interval) {
+                    lastGpsTime = now
+                    cntGps++
+                    true
+                } else false
+            }
+            in 1081..1087 -> {
+                val interval = if (hzGlo > 0) (1000.0 / hzGlo).toLong() else Long.MAX_VALUE
+                if (now - lastGloTime >= interval) {
+                    lastGloTime = now
+                    cntGlo++
+                    true
+                } else false
+            }
+            in 1091..1097 -> {
+                val interval = if (hzGal > 0) (1000.0 / hzGal).toLong() else Long.MAX_VALUE
+                if (now - lastGalTime >= interval) {
+                    lastGalTime = now
+                    cntGal++
+                    true
+                } else false
+            }
+            in 1121..1127 -> {
+                val interval = if (hzBds > 0) (1000.0 / hzBds).toLong() else Long.MAX_VALUE
+                if (now - lastBdsTime >= interval) {
+                    lastBdsTime = now
+                    cntBds++
+                    true
+                } else false
+            }
+            1230 -> {
+                val interval = if (hzBias > 0) (1000.0 / hzBias).toLong() else Long.MAX_VALUE
+                if (now - lastBiasTime >= interval) {
+                    lastBiasTime = now
+                    cntBias++
+                    true
+                } else false
+            }
+            else -> false  // Skip unknown message types
+        }
+    }
+
+    private fun sendRtcmToDevice(rtcmData: ByteArray) {
+        if (!isConnected || rxCharacteristic == null || bluetoothGatt == null) {
+            return
+        }
+
+        try {
+            // BLE MTU limits chunk size - send in 200-byte chunks with "RTCM:" prefix
+            val maxChunk = 200
+            var offset = 0
+            while (offset < rtcmData.size) {
+                val chunkLen = minOf(maxChunk, rtcmData.size - offset)
+                val chunk = rtcmData.copyOfRange(offset, offset + chunkLen)
+
+                val cmd = ByteArray(5 + chunkLen)
+                "RTCM:".toByteArray().copyInto(cmd, 0)
+                chunk.copyInto(cmd, 5)
+
+                rxCharacteristic!!.value = cmd
+                bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
+                rtcmBytesSent += chunkLen
+
+                offset += chunkLen
+
+                // Small delay between chunks
+                if (offset < rtcmData.size) {
+                    Thread.sleep(20)
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("NTRIP", "RTCM send error: ${e.message}")
+        }
+    }
+
 }
