@@ -1,0 +1,538 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#1a1a2e">
+
+    <com.google.android.material.tabs.TabLayout
+        android:id="@+id/tabLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#16213e"
+        app:tabTextColor="#888888"
+        app:tabSelectedTextColor="#ffffff"
+        app:tabIndicatorColor="#00bcd4"/>
+
+    <ViewFlipper
+        android:id="@+id/viewFlipper"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+        <!-- Remote Tab Content -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <!-- Connection Status -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="8dp"
+                    android:background="#16213e"
+                    android:layout_marginBottom="16dp">
+
+                    <View
+                        android:id="@+id/connectionIndicator"
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:background="@drawable/indicator_disconnected"
+                        android:layout_marginEnd="8dp"/>
+
+                    <TextView
+                        android:id="@+id/connectionStatus"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Disconnected"
+                        android:textColor="#ffffff"
+                        android:textSize="16sp"/>
+
+                    <Button
+                        android:id="@+id/connectButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Connect"
+                        android:backgroundTint="#00bcd4"/>
+
+                </LinearLayout>
+
+                <!-- GPS Status Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="12dp"
+                    android:layout_marginBottom="12dp">
+
+                    <!-- GPS Status Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="8dp">
+
+                        <View
+                            android:id="@+id/fixIndicator"
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:background="@drawable/indicator_no_fix"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="GPS Status"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/fixStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="No Fix"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+
+                    <!-- Satellites Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="8dp"
+                        android:layout_marginStart="24dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Satellites"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/satellites"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="0"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+
+                    <!-- Lat/Lon Row -->
+                    <TextView
+                        android:id="@+id/latLonValue"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="---, ---"
+                        android:textColor="#ffffff"
+                        android:textSize="16sp"
+                        android:layout_marginStart="24dp"
+                        android:fontFamily="monospace"/>
+                </LinearLayout>
+
+                <!-- Depth Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="12dp"
+                    android:layout_marginBottom="12dp">
+
+                    <!-- Depth Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="6dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Depth"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/depthValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="-- m"
+                            android:textColor="#00bcd4"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+
+                    <!-- Temperature Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Temp"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/tempValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="-- °C"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- IMU Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="12dp"
+                    android:layout_marginBottom="12dp">
+
+                    <!-- IMU Calibration Note -->
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="IMU Calibration in Config tab"
+                        android:textColor="#666666"
+                        android:textSize="12sp"
+                        android:layout_marginBottom="8dp"/>
+
+                    <!-- Pitch Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="6dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Pitch"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/pitchValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--°"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+
+                    <!-- Roll Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Roll"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/rollValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--°"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- 3D Sonar Model -->
+                <com.deeperrtk.remote.SonarGLSurfaceView
+                    android:id="@+id/sonarGLView"
+                    android:layout_width="match_parent"
+                    android:layout_height="200dp"
+                    android:layout_marginBottom="16dp"/>
+
+                <!-- Recording Controls -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center"
+                    android:layout_marginTop="16dp">
+                    <View
+                        android:id="@+id/recordingIndicator"
+                        android:layout_width="16dp"
+                        android:layout_height="16dp"
+                        android:background="@drawable/indicator_disconnected"
+                        android:layout_marginEnd="8dp"/>
+                    <Button
+                        android:id="@+id/startButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Start"
+                        android:backgroundTint="#4caf50"
+                        android:layout_marginEnd="8dp"/>
+                    <Button
+                        android:id="@+id/stopButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Stop"
+                        android:backgroundTint="#f44336"/>
+                </LinearLayout>
+
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- Config Tab Content -->
+        <ScrollView
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <!-- Deeper WiFi Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="16dp"
+                    android:layout_marginBottom="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Deeper Sonar WiFi"
+                        android:textColor="#ffffff"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="16dp"/>
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Deeper SSID (e.g. DEEPER-XXXX)"
+                        android:textColor="#888888"
+                        android:textSize="14sp"
+                        android:layout_marginBottom="8dp"/>
+
+                    <EditText
+                        android:id="@+id/deeperSsidInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:hint="DEEPER-CHIRP2-XXXXX"
+                        android:textColor="#ffffff"
+                        android:textColorHint="#666666"
+                        android:background="#1a1a2e"
+                        android:padding="12dp"
+                        android:inputType="text"/>
+
+                </LinearLayout>
+
+                <!-- NMEA Control Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="16dp"
+                    android:layout_marginBottom="16dp">
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="NMEA Output Control"
+                        android:textColor="#ffffff"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp"/>
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Send UDP command to enable NMEA messages"
+                        android:textColor="#888888"
+                        android:textSize="14sp"
+                        android:layout_marginBottom="16dp"/>
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <Button
+                            android:id="@+id/enableNmeaButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Send Enable NMEA"
+                            android:backgroundTint="#00bcd4"
+                            android:layout_marginEnd="16dp"/>
+                        <View
+                            android:id="@+id/nmeaIndicator"
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:background="@drawable/indicator_disconnected"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/nmeaStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Not sent"
+                            android:textColor="#888888"
+                            android:textSize="14sp"/>
+
+                    </LinearLayout>
+                </LinearLayout>
+
+                <!-- IMU Calibration Section -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:background="#16213e"
+                    android:padding="16dp"
+                    android:layout_marginBottom="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="IMU Calibration"
+                        android:textColor="#ffffff"
+                        android:textSize="18sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp"/>
+
+                    <TextView
+                        android:id="@+id/imuCalibrationInstructions"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Place B-BOX on a level surface, then tap Level to zero pitch and roll."
+                        android:textColor="#888888"
+                        android:textSize="14sp"
+                        android:layout_marginBottom="16dp"/>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <Button
+                            android:id="@+id/levelButton"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Level"
+                            android:backgroundTint="#4caf50"
+                            android:layout_marginEnd="16dp"/>
+
+                        <View
+                            android:id="@+id/imuCalibIndicator"
+                            android:layout_width="16dp"
+                            android:layout_height="16dp"
+                            android:background="@drawable/indicator_disconnected"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/imuCalibStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Not calibrated"
+                            android:textColor="#888888"
+                            android:textSize="14sp"/>
+
+                    </LinearLayout>
+                </LinearLayout>
+
+            </LinearLayout>
+        </ScrollView>
+
+        <!-- Logs Tab Content -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <!-- Header -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SD Card Logs"
+                android:textColor="#ffffff"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="8dp"/>
+
+            <TextView
+                android:id="@+id/logsStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Tap Refresh to load logs"
+                android:textColor="#888888"
+                android:textSize="14sp"
+                android:layout_marginBottom="16dp"/>
+
+            <!-- Refresh Button -->
+            <Button
+                android:id="@+id/refreshLogsButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Refresh"
+                android:backgroundTint="#00bcd4"
+                android:layout_marginBottom="16dp"/>
+
+            <!-- Logs List -->
+            <ListView
+                android:id="@+id/logsListView"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:background="#16213e"
+                android:divider="#333333"
+                android:dividerHeight="1dp"
+                android:scrollbars="vertical"
+                android:fadeScrollbars="false"/>
+
+            <!-- Delete All Button -->
+            <Button
+                android:id="@+id/deleteAllButton"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Delete All Logs"
+                android:backgroundTint="#f44336"
+                android:layout_marginTop="16dp"/>
+
+        </LinearLayout>
+
+    </ViewFlipper>
+
+</LinearLayout>

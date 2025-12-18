@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.DeeperRTKRemote" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#1a1a2e</item>
+        <item name="colorPrimaryVariant">#16213e</item>
+        <item name="colorOnPrimary">#ffffff</item>
+        <item name="colorSecondary">#00bcd4</item>
+        <item name="colorSecondaryVariant">#0097a7</item>
+        <item name="colorOnSecondary">#000000</item>
+        <item name="android:statusBarColor">#1a1a2e</item>
+    </style>
+</resources>

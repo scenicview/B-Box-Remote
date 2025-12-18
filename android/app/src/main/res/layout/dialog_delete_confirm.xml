@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="#1a1a2e">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Warning"
+        android:textColor="#f44336"
+        android:textSize="24sp"
+        android:textStyle="bold"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="All log files will be permanently deleted from the SD card. This action cannot be undone."
+        android:textColor="#ffffff"
+        android:textSize="16sp"
+        android:layout_marginBottom="24dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Slide to delete all files"
+        android:textColor="#888888"
+        android:textSize="14sp"
+        android:layout_marginBottom="8dp"/>
+
+    <SeekBar
+        android:id="@+id/deleteSlider"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="100"
+        android:progress="0"
+        android:progressTint="#f44336"
+        android:thumbTint="#f44336"
+        android:layout_marginBottom="24dp"/>
+
+    <Button
+        android:id="@+id/keepFilesButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="No, I want to keep my files"
+        android:backgroundTint="#4caf50"
+        android:textColor="#ffffff"/>
+
+</LinearLayout>

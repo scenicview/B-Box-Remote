@@ -1,0 +1,22 @@
+# Build outputs
+android/app/build/
+android/build/
+android/.gradle/
+*.apk
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Android SDK/JDK (local)
+android-sdk/
+jdk-*/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Temp files
+*.tmp
+*.bak

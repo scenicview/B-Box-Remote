@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Circle background -->
+    <path
+        android:fillColor="#4CAF50"
+        android:pathData="M54,54m-40,0a40,40 0,1 1,80 0a40,40 0,1 1,-80 0"/>
+    <!-- GPS satellite signal arcs -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,34 L54,44 A16,16 0 0,1 70,60 L80,60 A26,26 0 0,0 54,34z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,44 L54,54 A6,6 0 0,1 60,60 L70,60 A16,16 0 0,0 54,44z"/>
+    <!-- Center dot -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,60m-4,0a4,4 0,1 1,8 0a4,4 0,1 1,-8 0"/>
+    <!-- Water wave lines -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M34,70 Q44,65 54,70 Q64,75 74,70"/>
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:pathData="M34,78 Q44,73 54,78 Q64,83 74,78"/>
+    <!-- Sonar beam (dotted line going down) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,84m-1.5,0a1.5,1.5 0,1 1,3 0a1.5,1.5 0,1 1,-3 0"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,89m-1.5,0a1.5,1.5 0,1 1,3 0a1.5,1.5 0,1 1,-3 0"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,94m-1.5,0a1.5,1.5 0,1 1,3 0a1.5,1.5 0,1 1,-3 0"/>
+</vector>
