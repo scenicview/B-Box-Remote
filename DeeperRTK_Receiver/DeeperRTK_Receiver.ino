@@ -581,6 +581,7 @@ void setupBLE() {
   // Start advertising
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setName("DeeperRTK");  // Include name in advertisement
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
 

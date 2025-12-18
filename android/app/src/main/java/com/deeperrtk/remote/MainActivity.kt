@@ -41,6 +41,7 @@ import org.osmdroid.views.overlay.Polygon
 import android.graphics.Color
 import android.graphics.Paint
 import android.content.Intent
+import android.content.SharedPreferences
 import android.preference.PreferenceManager
 
 class MainActivity : AppCompatActivity() {
@@ -141,6 +142,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var stopButton: Button
     private lateinit var sonarGLView: SonarGLSurfaceView
 
+    // SharedPreferences for saving settings
+    private lateinit var prefs: SharedPreferences
+
     // UI Elements - NTRIP
     private lateinit var ntripHost: EditText
     private lateinit var ntripPort: EditText
@@ -208,10 +212,8 @@ class MainActivity : AppCompatActivity() {
                 val serviceUuids = result.scanRecord?.serviceUuids
                 val hasOurService = serviceUuids?.any { it.uuid == SERVICE_UUID } == true
 
-                // Debug log: show all devices with our service or "Deep" in name
-                if (deviceName?.contains("Deep", ignoreCase = true) == true || hasOurService) {
-                    android.util.Log.d("BLE_SCAN", "Seen: '$deviceName' hasService=$hasOurService addr=${device.address}")
-                }
+                // Debug log: show ALL devices found during scan
+                android.util.Log.d("BLE_SCAN", "Found: '$deviceName' addr=${device.address} rssi=${result.rssi}")
 
                 // Device matching based on connection mode
                 // Radio Link mode: Shore Station (name contains "Shore" OR null-named device with our service)
@@ -221,7 +223,8 @@ class MainActivity : AppCompatActivity() {
                 val matchesTarget = if (isRadioLinkMode) {
                     isShoreStation || (hasOurService && deviceName == null)
                 } else {
-                    isBBox
+                    // Match B-Box by name OR by having our Nordic UART service UUID
+                    isBBox || (hasOurService && !isShoreStation)
                 }
 
                 if (matchesTarget) {
@@ -397,6 +400,14 @@ class MainActivity : AppCompatActivity() {
         ntripIndicator = findViewById(R.id.ntripIndicator)
         ntripStatus = findViewById(R.id.ntripStatus)
         ntripStats = findViewById(R.id.ntripStats)
+
+        // Load saved NTRIP settings
+        prefs = getSharedPreferences("DeeperRTK", MODE_PRIVATE)
+        ntripHost.setText(prefs.getString("ntrip_host", "192.168.10.21"))
+        ntripPort.setText(prefs.getString("ntrip_port", "12345"))
+        ntripMountpoint.setText(prefs.getString("ntrip_mount", "LB1U02096"))
+        ntripUsername.setText(prefs.getString("ntrip_user", "chris"))
+        ntripPassword.setText(prefs.getString("ntrip_pass", "chris"))
 
         ntripConnectButton.setOnClickListener {
             if (isNtripConnected) disconnectNtrip() else connectNtrip()
@@ -840,6 +851,7 @@ class MainActivity : AppCompatActivity() {
         if (isScanning) return
         connectButton.isEnabled = false
         connectionStatus.text = "Scanning for DeeperRTK..."
+        android.util.Log.d("BLE_SCAN", "=== Starting BLE scan, radioLinkMode=$isRadioLinkMode ===")
 
         try {
             val scanSettings = ScanSettings.Builder()
@@ -847,9 +859,11 @@ class MainActivity : AppCompatActivity() {
                 .build()
             bluetoothLeScanner?.startScan(null, scanSettings, scanCallback)
             isScanning = true
+            android.util.Log.d("BLE_SCAN", "Scan started successfully")
 
             handler.postDelayed({
                 if (isScanning && !isConnected) {
+                    android.util.Log.d("BLE_SCAN", "=== Scan timeout - device not found ===")
                     stopScan()
                     connectionStatus.text = "Device not found"
                     connectButton.isEnabled = true
@@ -1212,10 +1226,19 @@ class MainActivity : AppCompatActivity() {
     // ========== NTRIP CLIENT ==========
     private fun connectNtrip() {
         val host = ntripHost.text.toString().trim()
-        val port = ntripPort.text.toString().toIntOrNull() ?: 2101
+        val port = ntripPort.text.toString().toIntOrNull() ?: 12345
         val mountpoint = ntripMountpoint.text.toString().trim()
         val username = ntripUsername.text.toString()
         val password = ntripPassword.text.toString()
+
+        // Save settings
+        prefs.edit()
+            .putString("ntrip_host", host)
+            .putString("ntrip_port", port.toString())
+            .putString("ntrip_mount", mountpoint)
+            .putString("ntrip_user", username)
+            .putString("ntrip_pass", password)
+            .apply()
 
         if (host.isEmpty() || mountpoint.isEmpty()) {
             Toast.makeText(this, "Enter host and mountpoint", Toast.LENGTH_SHORT).show()
@@ -1228,7 +1251,9 @@ class MainActivity : AppCompatActivity() {
 
         ntripThread = Thread {
             try {
+                android.util.Log.d("NTRIP", "Connecting to $host:$port...")
                 ntripSocket = java.net.Socket(host, port)
+                android.util.Log.d("NTRIP", "Socket connected")
                 ntripSocket!!.soTimeout = 30000
 
                 val output = ntripSocket!!.getOutputStream()
@@ -1246,15 +1271,21 @@ class MainActivity : AppCompatActivity() {
                     "\r\n"
                 output.write(request.toByteArray())
                 output.flush()
+                android.util.Log.d("NTRIP", "Request sent: GET /$mountpoint")
 
                 // Read response header
                 val headerBuffer = StringBuilder()
                 var b: Int
                 while (input.read().also { b = it } != -1) {
                     headerBuffer.append(b.toChar())
+                    // Break on double CRLF or single CRLF after 200 OK
                     if (headerBuffer.endsWith("\r\n\r\n")) break
+                    if (headerBuffer.contains("200 OK") && headerBuffer.endsWith("\r\n")) break
+                    if (headerBuffer.contains("ICY 200") && headerBuffer.endsWith("\r\n")) break
+                    if (headerBuffer.length > 4096) break
                 }
                 val header = headerBuffer.toString()
+                android.util.Log.d("NTRIP", "Response header: ${header.take(200)}")
 
                 if (!header.contains("200 OK") && !header.contains("ICY 200 OK")) {
                     val errorMsg = if (header.contains("401")) "Auth failed"
@@ -1298,6 +1329,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             } catch (e: Exception) {
+                android.util.Log.e("NTRIP", "Connection error: ${e.javaClass.simpleName}: ${e.message}")
                 val wasConnected = isNtripConnected
                 handler.post {
                     if (!wasConnected) {
