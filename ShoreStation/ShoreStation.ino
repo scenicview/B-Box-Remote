@@ -76,8 +76,18 @@ bool bleConnected = false;
 uint32_t bleConnectTime = 0;
 String bleRxBuffer = "";
 
+// BLE RTCM buffer (processed in main loop, not in callback)
+uint8_t bleRtcmBuffer[512];
+volatile uint16_t bleRtcmHead = 0;
+volatile uint16_t bleRtcmTail = 0;
+
+// ========== NTRIP CONTROL ==========
+bool shoreNtripEnabled = false;  // Disabled - use phone NTRIP only  // Enable/disable Shore Station's own NTRIP
+
 // ========== RTCM STATE ==========
 uint8_t rtcmBuffer[RTCM_BUFFER_SIZE];
+uint32_t rtcmViaBleCount = 0;   // RTCM messages received via BLE
+uint32_t rtcmViaBleBytes = 0;   // RTCM bytes received via BLE
 uint16_t rtcmIndex = 0;
 uint16_t rtcmLength = 0;
 uint8_t rtcmState = 0;
@@ -164,7 +174,27 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo& connInfo) override {
     std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
-      bleRxBuffer += rxValue.c_str();
+      // Check for RTCM binary data (starts with "RTCM:")
+      if (rxValue.length() > 5 && rxValue.substr(0, 5) == "RTCM:") {
+        // Buffer RTCM data for processing in main loop (NOT here - causes crash)
+        size_t rtcmLen = rxValue.length() - 5;
+        const uint8_t* rtcmData = (const uint8_t*)(rxValue.data() + 5);
+        
+        // Add to circular buffer
+        for (size_t i = 0; i < rtcmLen; i++) {
+          uint16_t nextHead = (bleRtcmHead + 1) % 512;
+          if (nextHead != bleRtcmTail) {  // Don't overflow
+            bleRtcmBuffer[bleRtcmHead] = rtcmData[i];
+            bleRtcmHead = nextHead;
+          }
+        }
+        
+        rtcmViaBleCount++;
+        rtcmViaBleBytes += rtcmLen;
+      } else {
+        // Regular text command
+        bleRxBuffer += rxValue.c_str();
+      }
     }
   }
 };
@@ -500,6 +530,23 @@ void handleBLECommands() {
     else if (cmd == "PING") {
       bleSend("PONG\n");
     }
+    else if (cmd == "SHORE_NTRIP_ON") {
+      shoreNtripEnabled = true;
+      if (wifiConnected && !ntripConnected) {
+        connectNTRIP();
+      }
+      bleSend("OK:SHORE_NTRIP_ON\n");
+      Serial.println("[CMD] Shore NTRIP enabled");
+    }
+    else if (cmd == "SHORE_NTRIP_OFF") {
+      shoreNtripEnabled = false;
+      if (ntripConnected) {
+        ntripClient.stop();
+        ntripConnected = false;
+      }
+      bleSend("OK:SHORE_NTRIP_OFF\n");
+      Serial.println("[CMD] Shore NTRIP disabled");
+    }
   }
 }
 
@@ -607,8 +654,8 @@ void setup() {
   // Connect WiFi
   connectWiFi();
 
-  // Connect NTRIP
-  if (wifiConnected) {
+  // Connect NTRIP (only if enabled)
+  if (shoreNtripEnabled && wifiConnected) {
     connectNTRIP();
   }
 
@@ -627,11 +674,11 @@ void loop() {
   if (millis() - lastNtripCheck > 10000) {
     lastNtripCheck = millis();
     if (!wifiConnected) connectWiFi();
-    if (wifiConnected && !ntripConnected) connectNTRIP();
+    if (shoreNtripEnabled && wifiConnected && !ntripConnected) connectNTRIP();
   }
 
   // Process NTRIP data (TX mode)
-  if (ntripConnected && ntripClient.connected() && !inRxMode) {
+  if (shoreNtripEnabled && ntripConnected && ntripClient.connected() && !inRxMode) {
     while (ntripClient.available()) {
       uint8_t byte = ntripClient.read();
       processRTCMByte(byte);
@@ -647,6 +694,13 @@ void loop() {
   // Exit RX mode after timeout (for time-division when RTCM is flowing)
   if (inRxMode && (millis() - rxModeStartTime > STATUS_LISTEN_MS)) {
     inRxMode = false;
+  }
+
+  // Process buffered RTCM data from BLE (safe - outside callback)
+  while (bleRtcmTail != bleRtcmHead) {
+    uint8_t byte = bleRtcmBuffer[bleRtcmTail];
+    bleRtcmTail = (bleRtcmTail + 1) % 512;
+    processRTCMByte(byte);
   }
 
   // Handle BLE commands from phone

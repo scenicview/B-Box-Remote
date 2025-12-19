@@ -27,6 +27,7 @@ import android.widget.ListView
 import android.widget.ArrayAdapter
 import android.widget.SeekBar
 import android.widget.CheckBox
+import androidx.appcompat.widget.SwitchCompat
 import android.app.AlertDialog
 import android.os.Environment
 import java.io.File
@@ -91,6 +92,11 @@ class MainActivity : AppCompatActivity() {
     private var rtcmBytesSent = 0L
     private var rtcmMessagesReceived = 0L
 
+    // BLE write synchronization - prevents concurrent writes that cause disconnects
+    private val bleLock = Object()
+    private var lastBleWriteTime = 0L
+    private val BLE_WRITE_INTERVAL_MS = 30L  // Minimum time between BLE writes
+
     // RTCM message counters
     private var cntStation = 0L
     private var cntGps = 0L
@@ -123,7 +129,9 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             if (isConnected) {
                 sendCommand("STATUS")
-                handler.postDelayed(this, 67) // Poll at 15Hz (~67ms)
+                // Reduce polling rate when NTRIP is active to prevent BLE congestion
+                val pollInterval = if (isNtripConnected) 500L else 67L
+                handler.postDelayed(this, pollInterval)
             }
         }
     }
@@ -169,6 +177,7 @@ class MainActivity : AppCompatActivity() {
 
     // IMU Calibration UI
     private lateinit var levelButton: Button
+    private lateinit var shoreNtripSwitch: SwitchCompat
     private lateinit var imuCalibIndicator: View
     private lateinit var imuCalibStatus: TextView
 
@@ -398,8 +407,8 @@ class MainActivity : AppCompatActivity() {
                 // Disconnect and reconnect with new mode
                 if (isConnected) {
                     disconnect()
-                    handler.postDelayed({ checkPermissionsAndConnect() }, 500)
                 }
+                handler.postDelayed({ checkPermissionsAndConnect() }, 500)
             }
         }
 
@@ -416,8 +425,8 @@ class MainActivity : AppCompatActivity() {
                 // Disconnect and reconnect with new mode
                 if (isConnected) {
                     disconnect()
-                    handler.postDelayed({ checkPermissionsAndConnect() }, 500)
                 }
+                handler.postDelayed({ checkPermissionsAndConnect() }, 500)
             }
         }
 
@@ -446,6 +455,8 @@ class MainActivity : AppCompatActivity() {
 
         // IMU Calibration bindings
         levelButton = findViewById(R.id.levelButton)
+        shoreNtripSwitch = findViewById(R.id.shoreNtripSwitch)
+
         imuCalibIndicator = findViewById(R.id.imuCalibIndicator)
         imuCalibStatus = findViewById(R.id.imuCalibStatus)
 
@@ -469,6 +480,15 @@ class MainActivity : AppCompatActivity() {
         ntripMountpoint.setText(prefs.getString("ntrip_mount", "LB1U02096"))
         ntripUsername.setText(prefs.getString("ntrip_user", "chris"))
         ntripPassword.setText(prefs.getString("ntrip_pass", "chris"))
+
+        // Shore Station NTRIP toggle (only visible in Radio Link mode)
+        shoreNtripSwitch.isChecked = prefs.getBoolean("shore_ntrip_enabled", false)
+        shoreNtripSwitch.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean("shore_ntrip_enabled", isChecked).apply()
+            if (isConnected && isRadioLinkMode) {
+                sendCommand(if (isChecked) "SHORE_NTRIP_ON" else "SHORE_NTRIP_OFF")
+            }
+        }
 
         ntripConnectButton.setOnClickListener {
             if (isNtripConnected) disconnectNtrip() else connectNtrip()
@@ -1095,10 +1115,20 @@ class MainActivity : AppCompatActivity() {
 
     private fun sendCommand(command: String) {
         if (!isConnected || rxCharacteristic == null || bluetoothGatt == null) return
-        try {
-            rxCharacteristic!!.value = ("$command" + "\n").toByteArray()
-            bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
-        } catch (e: SecurityException) { }
+        synchronized(bleLock) {
+            try {
+                // Wait for minimum interval between writes to prevent BLE congestion
+                val now = System.currentTimeMillis()
+                val elapsed = now - lastBleWriteTime
+                if (elapsed < BLE_WRITE_INTERVAL_MS) {
+                    Thread.sleep(BLE_WRITE_INTERVAL_MS - elapsed)
+                }
+                rxCharacteristic!!.value = ("$command\n").toByteArray()
+                bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
+                lastBleWriteTime = System.currentTimeMillis()
+            } catch (e: SecurityException) { }
+            catch (e: InterruptedException) { }
+        }
     }
 
     private fun processReceivedData(data: String) {
@@ -1623,32 +1653,37 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        try {
-            android.util.Log.d("NTRIP", "Sending ${rtcmData.size} bytes RTCM via BLE")
-            // BLE MTU limits chunk size - send in 200-byte chunks with "RTCM:" prefix
-            val maxChunk = 200
-            var offset = 0
-            while (offset < rtcmData.size) {
-                val chunkLen = minOf(maxChunk, rtcmData.size - offset)
-                val chunk = rtcmData.copyOfRange(offset, offset + chunkLen)
+        synchronized(bleLock) {
+            try {
+                android.util.Log.d("NTRIP", "Sending ${rtcmData.size} bytes RTCM via BLE")
+                // BLE MTU limits chunk size - send in 200-byte chunks with "RTCM:" prefix
+                val maxChunk = 200
+                var offset = 0
+                while (offset < rtcmData.size) {
+                    val chunkLen = minOf(maxChunk, rtcmData.size - offset)
+                    val chunk = rtcmData.copyOfRange(offset, offset + chunkLen)
 
-                val cmd = ByteArray(5 + chunkLen)
-                "RTCM:".toByteArray().copyInto(cmd, 0)
-                chunk.copyInto(cmd, 5)
+                    val cmd = ByteArray(5 + chunkLen)
+                    "RTCM:".toByteArray().copyInto(cmd, 0)
+                    chunk.copyInto(cmd, 5)
 
-                rxCharacteristic!!.value = cmd
-                bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
-                rtcmBytesSent += chunkLen
+                    // Wait for minimum interval between writes to prevent BLE congestion
+                    val now = System.currentTimeMillis()
+                    val elapsed = now - lastBleWriteTime
+                    if (elapsed < BLE_WRITE_INTERVAL_MS) {
+                        Thread.sleep(BLE_WRITE_INTERVAL_MS - elapsed)
+                    }
 
-                offset += chunkLen
+                    rxCharacteristic!!.value = cmd
+                    bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
+                    lastBleWriteTime = System.currentTimeMillis()
+                    rtcmBytesSent += chunkLen
 
-                // Small delay between chunks
-                if (offset < rtcmData.size) {
-                    Thread.sleep(20)
+                    offset += chunkLen
                 }
+            } catch (e: Exception) {
+                android.util.Log.e("NTRIP", "RTCM send error: ${e.message}")
             }
-        } catch (e: Exception) {
-            android.util.Log.e("NTRIP", "RTCM send error: ${e.message}")
         }
     }
 
