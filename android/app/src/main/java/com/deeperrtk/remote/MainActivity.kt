@@ -26,6 +26,7 @@ import kotlin.concurrent.thread
 import android.widget.ListView
 import android.widget.ArrayAdapter
 import android.widget.SeekBar
+import android.widget.CheckBox
 import android.app.AlertDialog
 import android.os.Environment
 import java.io.File
@@ -48,11 +49,15 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val DEVICE_NAME = "DeeperRTK"
+        private const val SHORE_SERVICE_UUID_STR = "6E400001-B5A3-F393-E0A9-E50E24DCCA9F"
 
-        // Nordic UART Service UUIDs (must match firmware)
+        // Nordic UART Service UUIDs - B-Box uses standard Nordic UART
         private val SERVICE_UUID: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         private val CHARACTERISTIC_UUID_RX: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
         private val CHARACTERISTIC_UUID_TX: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+
+        // Shore Station uses different service UUID but SAME characteristic UUIDs
+        private val SHORE_SERVICE_UUID: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9F")
 
         // Client Characteristic Configuration Descriptor
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
@@ -167,6 +172,30 @@ class MainActivity : AppCompatActivity() {
     private lateinit var imuCalibIndicator: View
     private lateinit var imuCalibStatus: TextView
 
+    // RTCM Rate Control UI
+    private lateinit var hzStationEdit: EditText
+    private lateinit var hzGpsEdit: EditText
+    private lateinit var hzGloEdit: EditText
+    private lateinit var hzGalEdit: EditText
+    private lateinit var hzBdsEdit: EditText
+    private lateinit var hzBiasEdit: EditText
+    private lateinit var cntStationText: TextView
+    private lateinit var cntGpsText: TextView
+    private lateinit var cntGloText: TextView
+    private lateinit var cntGalText: TextView
+    private lateinit var cntBdsText: TextView
+    private lateinit var cntBiasText: TextView
+
+    // NMEA Message Filter UI
+    private lateinit var filterGGA: CheckBox
+    private lateinit var filterRMC: CheckBox
+    private lateinit var filterVTG: CheckBox
+    private lateinit var filterGSA: CheckBox
+    private lateinit var filterDBT: CheckBox
+    private lateinit var filterMTW: CheckBox
+    private lateinit var filterGSV: CheckBox
+    private lateinit var filterOther: CheckBox
+
     // Logs Tab UI
     private lateinit var logsStatus: TextView
     private lateinit var refreshLogsButton: Button
@@ -216,15 +245,21 @@ class MainActivity : AppCompatActivity() {
                 android.util.Log.d("BLE_SCAN", "Found: '$deviceName' addr=${device.address} rssi=${result.rssi}")
 
                 // Device matching based on connection mode
-                // Radio Link mode: Shore Station (name contains "Shore" OR null-named device with our service)
-                // Direct mode: B-Box only (name contains "DeeperRTK" but NOT "Shore")
-                val isShoreStation = deviceName?.contains("Shore", ignoreCase = true) == true
-                val isBBox = deviceName?.contains(DEVICE_NAME, ignoreCase = true) == true && !isShoreStation
+                // Check if device has Shore Station's specific UUID
+                val hasShoreService = result.scanRecord?.serviceUuids?.any {
+                    it.toString().equals(SHORE_SERVICE_UUID_STR, ignoreCase = true)
+                } == true
+
+                // Radio Link mode: Shore Station (has Shore UUID OR name contains "Shore")
+                // Direct mode: B-Box only (has Nordic UART but NOT Shore UUID, or name contains DeeperRTK but not Shore)
+                val isShoreStation = hasShoreService || deviceName?.contains("Shore", ignoreCase = true) == true
+                val isBBox = (hasOurService && !hasShoreService) ||
+                             (deviceName?.contains(DEVICE_NAME, ignoreCase = true) == true && !isShoreStation)
+
                 val matchesTarget = if (isRadioLinkMode) {
-                    isShoreStation || (hasOurService && deviceName == null)
+                    isShoreStation
                 } else {
-                    // Match B-Box by name OR by having our Nordic UART service UUID
-                    isBBox || (hasOurService && !isShoreStation)
+                    isBBox && !isShoreStation
                 }
 
                 if (matchesTarget) {
@@ -264,8 +299,14 @@ class MainActivity : AppCompatActivity() {
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                val service = gatt.getService(SERVICE_UUID)
+                // Use correct service UUID based on connection mode
+                // Both devices use the SAME characteristic UUIDs, just different service UUID
+                val serviceUuid = if (isRadioLinkMode) SHORE_SERVICE_UUID else SERVICE_UUID
+
+                android.util.Log.d("DeeperRTK", "Looking for service: $serviceUuid (radioLink=$isRadioLinkMode)")
+                val service = gatt.getService(serviceUuid)
                 if (service != null) {
+                    // Characteristic UUIDs are the same for both B-Box and Shore Station
                     rxCharacteristic = service.getCharacteristic(CHARACTERISTIC_UUID_RX)
                     txCharacteristic = service.getCharacteristic(CHARACTERISTIC_UUID_TX)
                     if (txCharacteristic != null) {
@@ -345,19 +386,39 @@ class MainActivity : AppCompatActivity() {
         val radioModeStatus = findViewById<TextView>(R.id.radioModeStatus)
 
         btnDirectMode.setOnClickListener {
-            isRadioLinkMode = false
-            btnDirectMode.isSelected = true
-            btnRadioMode.isSelected = false
-            radioModeIndicator.setBackgroundResource(R.drawable.indicator_gray)
-            radioModeStatus.text = "Direct BLE"
+            if (isRadioLinkMode) {  // Only act if switching modes
+                isRadioLinkMode = false
+                btnDirectMode.isSelected = true
+                btnRadioMode.isSelected = false
+                // Update button colors: selected = blue, unselected = gray
+                btnDirectMode.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF00BCD4.toInt())
+                btnRadioMode.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF666666.toInt())
+                radioModeIndicator.setBackgroundResource(R.drawable.indicator_gray)
+                radioModeStatus.text = "Mode: B-BOX"
+                // Disconnect and reconnect with new mode
+                if (isConnected) {
+                    disconnect()
+                    handler.postDelayed({ checkPermissionsAndConnect() }, 500)
+                }
+            }
         }
 
         btnRadioMode.setOnClickListener {
-            isRadioLinkMode = true
-            btnDirectMode.isSelected = false
-            btnRadioMode.isSelected = true
-            radioModeIndicator.setBackgroundResource(R.drawable.indicator_float)
-            radioModeStatus.text = "Radio Link"
+            if (!isRadioLinkMode) {  // Only act if switching modes
+                isRadioLinkMode = true
+                btnDirectMode.isSelected = false
+                btnRadioMode.isSelected = true
+                // Update button colors: selected = blue, unselected = gray
+                btnRadioMode.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF00BCD4.toInt())
+                btnDirectMode.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF666666.toInt())
+                radioModeIndicator.setBackgroundResource(R.drawable.indicator_float)
+                radioModeStatus.text = "Mode: Radio Link"
+                // Disconnect and reconnect with new mode
+                if (isConnected) {
+                    disconnect()
+                    handler.postDelayed({ checkPermissionsAndConnect() }, 500)
+                }
+            }
         }
 
         // Default to direct mode
@@ -412,6 +473,74 @@ class MainActivity : AppCompatActivity() {
         ntripConnectButton.setOnClickListener {
             if (isNtripConnected) disconnectNtrip() else connectNtrip()
         }
+
+        // RTCM Rate Control bindings
+        hzStationEdit = findViewById(R.id.hzStation)
+        hzGpsEdit = findViewById(R.id.hzGps)
+        hzGloEdit = findViewById(R.id.hzGlo)
+        hzGalEdit = findViewById(R.id.hzGal)
+        hzBdsEdit = findViewById(R.id.hzBds)
+        hzBiasEdit = findViewById(R.id.hzBias)
+        cntStationText = findViewById(R.id.cntStation)
+        cntGpsText = findViewById(R.id.cntGps)
+        cntGloText = findViewById(R.id.cntGlo)
+        cntGalText = findViewById(R.id.cntGal)
+        cntBdsText = findViewById(R.id.cntBds)
+        cntBiasText = findViewById(R.id.cntBias)
+
+        // Load saved Hz values
+        hzStationEdit.setText(prefs.getString("hz_station", "0.1"))
+        hzGpsEdit.setText(prefs.getString("hz_gps", "1"))
+        hzGloEdit.setText(prefs.getString("hz_glo", "1"))
+        hzGalEdit.setText(prefs.getString("hz_gal", "1"))
+        hzBdsEdit.setText(prefs.getString("hz_bds", "1"))
+        hzBiasEdit.setText(prefs.getString("hz_bias", "0.2"))
+
+        // Initialize Hz values from saved prefs
+        hzStation = prefs.getString("hz_station", "0.1")?.toDoubleOrNull() ?: 0.1
+        hzGps = prefs.getString("hz_gps", "1")?.toDoubleOrNull() ?: 1.0
+        hzGlo = prefs.getString("hz_glo", "1")?.toDoubleOrNull() ?: 1.0
+        hzGal = prefs.getString("hz_gal", "1")?.toDoubleOrNull() ?: 1.0
+        hzBds = prefs.getString("hz_bds", "1")?.toDoubleOrNull() ?: 1.0
+        hzBias = prefs.getString("hz_bias", "0.2")?.toDoubleOrNull() ?: 0.2
+
+        // Add text watchers to update Hz values when changed
+        setupHzTextWatcher(hzStationEdit, "hz_station") { hzStation = it }
+        setupHzTextWatcher(hzGpsEdit, "hz_gps") { hzGps = it }
+        setupHzTextWatcher(hzGloEdit, "hz_glo") { hzGlo = it }
+        setupHzTextWatcher(hzGalEdit, "hz_gal") { hzGal = it }
+        setupHzTextWatcher(hzBdsEdit, "hz_bds") { hzBds = it }
+        setupHzTextWatcher(hzBiasEdit, "hz_bias") { hzBias = it }
+
+        // NMEA Filter bindings
+        filterGGA = findViewById(R.id.filterGGA)
+        filterRMC = findViewById(R.id.filterRMC)
+        filterVTG = findViewById(R.id.filterVTG)
+        filterGSA = findViewById(R.id.filterGSA)
+        filterDBT = findViewById(R.id.filterDBT)
+        filterMTW = findViewById(R.id.filterMTW)
+        filterGSV = findViewById(R.id.filterGSV)
+        filterOther = findViewById(R.id.filterOther)
+
+        // Load saved NMEA filter states
+        filterGGA.isChecked = prefs.getBoolean("filter_gga", true)
+        filterRMC.isChecked = prefs.getBoolean("filter_rmc", true)
+        filterVTG.isChecked = prefs.getBoolean("filter_vtg", false)
+        filterGSA.isChecked = prefs.getBoolean("filter_gsa", false)
+        filterDBT.isChecked = prefs.getBoolean("filter_dbt", true)
+        filterMTW.isChecked = prefs.getBoolean("filter_mtw", true)
+        filterGSV.isChecked = prefs.getBoolean("filter_gsv", false)
+        filterOther.isChecked = prefs.getBoolean("filter_other", false)
+
+        // Save NMEA filter state on change
+        filterGGA.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_gga", isChecked).apply() }
+        filterRMC.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_rmc", isChecked).apply() }
+        filterVTG.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_vtg", isChecked).apply() }
+        filterGSA.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_gsa", isChecked).apply() }
+        filterDBT.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_dbt", isChecked).apply() }
+        filterMTW.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_mtw", isChecked).apply() }
+        filterGSV.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_gsv", isChecked).apply() }
+        filterOther.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_other", isChecked).apply() }
 
         // Set up tabs
         tabLayout.addTab(tabLayout.newTab().setText("Remote"))
@@ -773,6 +902,29 @@ class MainActivity : AppCompatActivity() {
         mapView.invalidate()
     }
 
+    private fun setupHzTextWatcher(editText: EditText, prefKey: String, setter: (Double) -> Unit) {
+        editText.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                val value = s.toString().toDoubleOrNull() ?: 0.0
+                setter(value)
+                prefs.edit().putString(prefKey, s.toString()).apply()
+            }
+        })
+    }
+
+    private fun updateRtcmCounters() {
+        runOnUiThread {
+            cntStationText.text = cntStation.toString()
+            cntGpsText.text = cntGps.toString()
+            cntGloText.text = cntGlo.toString()
+            cntGalText.text = cntGal.toString()
+            cntBdsText.text = cntBds.toString()
+            cntBiasText.text = cntBias.toString()
+        }
+    }
+
     private fun calibrateIMU() {
         if (!isConnected) {
             Toast.makeText(this, "Not connected to B-BOX", Toast.LENGTH_SHORT).show()
@@ -899,7 +1051,7 @@ class MainActivity : AppCompatActivity() {
         connectButton.text = "Disconnect"
         connectButton.isEnabled = true
         connectionIndicator.setBackgroundResource(R.drawable.indicator_green)
-        connectionStatus.text = "Connected (BLE)"
+        connectionStatus.text = if (isRadioLinkMode) "Connected to Shore Station" else "Connected to B-BOX"
         startButton.isEnabled = true
         stopButton.isEnabled = true
         handler.postDelayed(pollRunnable, 500)
@@ -946,12 +1098,11 @@ class MainActivity : AppCompatActivity() {
         try {
             rxCharacteristic!!.value = ("$command" + "\n").toByteArray()
             bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
-        } catch (e: SecurityException) {
-            Toast.makeText(this, "Write permission denied", Toast.LENGTH_SHORT).show()
-        }
+        } catch (e: SecurityException) { }
     }
 
     private fun processReceivedData(data: String) {
+        android.util.Log.d("DeeperRTK", "RX raw: $data")
         lineBuffer.append(data)
         while (lineBuffer.contains("\n")) {
             val newlineIndex = lineBuffer.indexOf("\n")
@@ -965,7 +1116,7 @@ class MainActivity : AppCompatActivity() {
         // Handle command responses
         // Handle logs-related responses
         if (line.startsWith("LOGS:") || line.startsWith("FILE_") || line == "FILE_END" ||
-            line == "OK:DELETE_ALL" || line == "ERR:NO_FILES") {
+            line == "OK:DELETE_ALL" || line == "ERR:NO_FILES" || line == "ERR:RADIO_LINK") {
             handleLogsResponse(line)
             return
         }
@@ -1070,6 +1221,7 @@ class MainActivity : AppCompatActivity() {
 
     // Logs Tab Functions
     private fun requestLogsList() {
+        android.util.Log.d("DeeperRTK", "requestLogsList() called, isConnected=$isConnected")
         if (!isConnected) {
             Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show()
             return
@@ -1077,6 +1229,7 @@ class MainActivity : AppCompatActivity() {
         logsStatus.text = "Requesting logs..."
         logFiles.clear()
         logsAdapter.clear()
+        android.util.Log.d("DeeperRTK", "Sending LIST_LOGS command")
         sendCommand("LIST_LOGS")
     }
 
@@ -1174,6 +1327,10 @@ class MainActivity : AppCompatActivity() {
             }
             line == "ERR:NO_FILES" -> {
                 logsStatus.text = "No logs on device"
+            }
+            line == "ERR:RADIO_LINK" -> {
+                logsStatus.text = "Not available via radio link"
+                Toast.makeText(this, "Log management requires direct B-Box connection", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -1323,9 +1480,10 @@ class MainActivity : AppCompatActivity() {
                     // Process complete RTCM messages
                     processRtcmBuffer(rtcmBuffer)
 
-                    // Update stats
+                    // Update stats and counters
                     handler.post {
                         ntripStats.text = "RTCM: $rtcmMessagesReceived msgs, ${rtcmBytesSent/1024}KB sent"
+                        updateRtcmCounters()
                     }
                 }
             } catch (e: Exception) {
@@ -1387,7 +1545,9 @@ class MainActivity : AppCompatActivity() {
             rtcmMessagesReceived++
 
             // Update counters and check rate limits
-            if (shouldSendMessage(msgType)) {
+            val shouldSend = shouldSendMessage(msgType)
+            android.util.Log.d("NTRIP", "RTCM type $msgType, shouldSend=$shouldSend")
+            if (shouldSend) {
                 sendRtcmToDevice(message)
             }
         }
@@ -1450,11 +1610,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendRtcmToDevice(rtcmData: ByteArray) {
-        if (!isConnected || rxCharacteristic == null || bluetoothGatt == null) {
+        if (!isConnected) {
+            android.util.Log.w("NTRIP", "sendRtcmToDevice: not connected")
+            return
+        }
+        if (rxCharacteristic == null) {
+            android.util.Log.w("NTRIP", "sendRtcmToDevice: rxCharacteristic is null")
+            return
+        }
+        if (bluetoothGatt == null) {
+            android.util.Log.w("NTRIP", "sendRtcmToDevice: bluetoothGatt is null")
             return
         }
 
         try {
+            android.util.Log.d("NTRIP", "Sending ${rtcmData.size} bytes RTCM via BLE")
             // BLE MTU limits chunk size - send in 200-byte chunks with "RTCM:" prefix
             val maxChunk = 200
             var offset = 0

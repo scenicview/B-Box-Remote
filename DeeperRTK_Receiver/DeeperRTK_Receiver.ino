@@ -117,10 +117,13 @@ bool imuFilterInitialized = false;
 
 // ========== LORA TELEMETRY (Status TX to Shore Station) ==========
 #define STATUS_PACKET_TYPE 0xBB     // Magic byte to identify status packets
-#define LORA_STATUS_INTERVAL_MS 100 // Send status at 10 Hz when enabled
+#define COMMAND_PACKET_TYPE 0xCC   // Magic byte for commands from Shore Station
+#define LORA_STATUS_INTERVAL_MS 67 // Send status at 15 Hz (with yield to RTCM)
 bool loraTelemEnabled = true;       // Enable LoRa status telemetry by default
 uint32_t lastLoraStatusTx = 0;      // Last status TX time
 uint32_t loraStatusTxCount = 0;     // Count of status packets sent
+uint32_t lastLoraRx = 0;            // Last LoRa packet receive time (for yield logic)
+#define LORA_YIELD_MS 50            // Don't TX status within 50ms of receiving RTCM
 
 // RTCM via BLE counters
 uint32_t rtcmViaBleCount = 0;        // Count of RTCM messages received via BLE
@@ -996,11 +999,13 @@ void updateDisplay() {
   }
   display.println();
 
-  // Row 4: LoRa signal
-  display.print("R:");
-  display.print(lastRSSI);
-  display.print(" S:");
-  display.println(lastSNR, 1);
+  // Row 4: LoRa packets RX/TX
+  display.print("RX:");
+  display.print(loraPacketsReceived);
+  display.print(" TX:");
+  display.print(loraStatusTxCount);
+  display.print(" R:");
+  display.println(lastRSSI);
 
   // Row 5: WiFi/Deeper status + BLE
   display.print("WiFi:");
@@ -1302,13 +1307,76 @@ void parseGPSNmea(char* nmea) {
   }
 }
 
+// ========== PROCESS LORA COMMAND ==========
+void processLoRaCommand(const char* cmd) {
+  Serial.print("[LORA CMD] Received: ");
+  Serial.println(cmd);
+
+  if (strcmp(cmd, "START") == 0) {
+    recordingEnabled = true;
+    Serial.println("[LORA CMD] Recording STARTED");
+  }
+  else if (strcmp(cmd, "STOP") == 0) {
+    recordingEnabled = false;
+    Serial.println("[LORA CMD] Recording STOPPED");
+  }
+  else if (strcmp(cmd, "FREQ_WIDE") == 0) {
+    sendDeeperCommand("$DEEP230,3*3C");
+    Serial.println("[LORA CMD] Deeper set to WIDE");
+  }
+  else if (strcmp(cmd, "FREQ_MED") == 0) {
+    sendDeeperCommand("$DEEP230,4*3D");
+    Serial.println("[LORA CMD] Deeper set to MEDIUM");
+  }
+  else if (strcmp(cmd, "FREQ_NARROW") == 0) {
+    sendDeeperCommand("$DEEP230,5*3E");
+    Serial.println("[LORA CMD] Deeper set to NARROW");
+  }
+  else {
+    Serial.print("[LORA CMD] Unknown command: ");
+    Serial.println(cmd);
+  }
+}
+
 // ========== LORA RECEIVE ==========
 void onLoRaReceive(int packetSize) {
   if (packetSize < 3) return;
 
+  lastLoraRx = millis();  // Track receive time for yield logic
   lastRSSI = LoRa.packetRssi();
   lastSNR = LoRa.packetSnr();
   loraPacketsReceived++;
+
+  // Check first byte for packet type
+  uint8_t firstByte = LoRa.peek();
+  
+  // Debug: log all received packets
+  Serial.print("[LORA RX] Size:");
+  Serial.print(packetSize);
+  Serial.print(" First:0x");
+  Serial.print(firstByte, HEX);
+  Serial.print(" RSSI:");
+  Serial.println(lastRSSI);
+
+  // Handle command packets from Shore Station (0xCC)
+  if (firstByte == COMMAND_PACKET_TYPE) {
+    LoRa.read();  // consume the magic byte
+    char cmdBuf[32];
+    int idx = 0;
+    while (LoRa.available() && idx < 31) {
+      cmdBuf[idx++] = LoRa.read();
+    }
+    cmdBuf[idx] = '\0';
+    Serial.print("[CMD PKT] Got command: '");
+    Serial.print(cmdBuf);
+    Serial.print("' len=");
+    Serial.println(idx);
+    processLoRaCommand(cmdBuf);
+    return;
+  } else {
+    Serial.print("[LORA] Not a command packet, first byte: 0x");
+    Serial.println(firstByte, HEX);
+  }
 
   uint8_t fragmentNum = LoRa.read();
   uint8_t totalFragments = LoRa.read();
@@ -1491,10 +1559,28 @@ void sendLoRaStatus() {
   if (!loraTelemEnabled) return;
   if (millis() - lastLoraStatusTx < LORA_STATUS_INTERVAL_MS) return;
 
+  // Yield to incoming packets - don't transmit if we recently received data
+  if (millis() - lastLoraRx < LORA_YIELD_MS) return;
+
+  // Make local copies to avoid race conditions with GPS parsing
+  // (GPS NMEA parsing can update struct while we're building status string)
+  int localFixQuality = gps.fixQuality;
+  int localSatellites = gps.satellites;
+  double localLatitude = gps.latitude;
+  double localLongitude = gps.longitude;
+  bool localGpsValid = gps.valid;
+
+  // Sanity check - discard obviously corrupt values
+  if (localFixQuality < 0 || localFixQuality > 6 || localSatellites < 0 || localSatellites > 50) {
+    localFixQuality = 0;
+    localSatellites = 0;
+    localGpsValid = false;
+  }
+
   // Format status string (same as BLE format)
-  String status = String(gps.fixQuality);
+  String status = String(localFixQuality);
   status += ",";
-  status += String(gps.satellites);
+  status += String(localSatellites);
   status += ",";
   if (sonar.valid && (millis() - sonar.lastUpdate < 5000)) {
     status += String(sonar.depthMeters, 2);
@@ -1517,15 +1603,15 @@ void sendLoRaStatus() {
   }
   status += ",";
   // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
-  bool loraGpsValid = gps.valid && 
-                      gps.satellites >= 4 &&
-                      gps.latitude != 0.0 && gps.longitude != 0.0 &&
-                      gps.latitude > -90.0 && gps.latitude < 90.0 &&
-                      gps.longitude > -180.0 && gps.longitude < 180.0;
+  bool loraGpsValid = localGpsValid && 
+                      localSatellites >= 4 &&
+                      localLatitude != 0.0 && localLongitude != 0.0 &&
+                      localLatitude > -90.0 && localLatitude < 90.0 &&
+                      localLongitude > -180.0 && localLongitude < 180.0;
   if (loraGpsValid) {
-    status += String(gps.latitude, 7);
+    status += String(localLatitude, 7);
     status += ",";
-    status += String(gps.longitude, 7);
+    status += String(localLongitude, 7);
   } else {
     status += "0,0";
   }
@@ -1824,12 +1910,18 @@ void handleListLogs() {
     return;
   }
 
-  // First pass: count files
+  // Build response string
+  String response = "LOGS:";
+  bool first = true;
   int fileCount = 0;
+
   File file = root.openNextFile();
   while (file) {
     String name = file.name();
     if (name.startsWith("log_") && name.endsWith(".csv")) {
+      if (!first) response += ";";
+      first = false;
+      response += name + "," + String(file.size()) + "," + String(file.getLastWrite());
       fileCount++;
     }
     file.close();
@@ -1839,39 +1931,22 @@ void handleListLogs() {
 
   if (fileCount == 0) {
     bleSend("LOGS:EMPTY\n");
-    Serial.println("[LOG] No log files found");
     return;
   }
 
-  // Send start marker with count
-  String startMsg = "LOGS_START:" + String(fileCount) + "\n";
-  bleSend(startMsg);
-  delay(20);  // Small delay between messages
+  response += "\n";
 
-  // Second pass: send each file individually
-  root = SD_MMC.open("/");
-  file = root.openNextFile();
-  while (file) {
-    String name = file.name();
-    if (name.startsWith("log_") && name.endsWith(".csv")) {
-      // Format: LOG:name,size,timestamp
-      String logMsg = "LOG:" + name + "," + String(file.size()) + "," + String(file.getLastWrite()) + "\n";
-      bleSend(logMsg);
-      delay(20);  // Small delay between messages for BLE stability
-    }
-    file.close();
-    file = root.openNextFile();
+  // Send response in chunks (BLE MTU is limited)
+  const int chunkSize = 180;
+  int offset = 0;
+
+  while (offset < response.length()) {
+    String chunk = response.substring(offset, min((int)response.length(), offset + chunkSize));
+    bleSend(chunk);
+    delay(30);
+    offset += chunkSize;
   }
-  root.close();
-
-  // Send end marker
-  bleSend("LOGS_END\n");
-
-  Serial.print("[LOG] Listed ");
-  Serial.print(fileCount);
-  Serial.println(" log files");
 }
-
 void handleDownloadLog(const String& filename) {
   if (!sdCardReady) {
     bleSend("ERR:NO_SD\n");

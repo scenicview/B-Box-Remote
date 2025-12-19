@@ -61,7 +61,7 @@ const char* NTRIP_PASS    = "chris";
 #define STATUS_PACKET_TYPE 0xBB     // Magic byte to identify status packets
 
 // ========== BLE CONFIGURATION ==========
-#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9F"
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
@@ -482,7 +482,35 @@ void handleBLECommands() {
         bleSend(status);
       }
     }
+    else if (cmd == "START") {
+      sendCommandViaLoRa("START");
+      bleSend("OK:REC_ON\n");
+    }
+    else if (cmd == "STOP") {
+      sendCommandViaLoRa("STOP");
+      bleSend("OK:REC_OFF\n");
+    }
+    else if (cmd.startsWith("FREQ_")) {
+      sendCommandViaLoRa(cmd.c_str());
+      bleSend("OK:" + cmd + "\n");
+    }
+    else if (cmd.startsWith("LIST_") || cmd.startsWith("DELETE") || cmd.startsWith("DOWNLOAD")) {
+      bleSend("ERR:RADIO_LINK\n");
+    }
+    else if (cmd == "PING") {
+      bleSend("PONG\n");
+    }
   }
+}
+
+// Send command to B-Box via LoRa
+void sendCommandViaLoRa(const char* cmdStr) {
+  LoRa.beginPacket();
+  LoRa.write(0xCC);  // Command packet type
+  LoRa.print(cmdStr);
+  LoRa.endPacket();
+  Serial.print("[CMD] Sent via LoRa: ");
+  Serial.println(cmdStr);
 }
 
 // ========== DISPLAY ==========
