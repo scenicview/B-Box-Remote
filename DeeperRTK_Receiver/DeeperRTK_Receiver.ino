@@ -1,13 +1,12 @@
 /*
- * TTGO LoRa32 V2.0 - Deeper Sonar + RTK Receiver
- * Combines RTK corrections via LoRa with Deeper Chirp+2 sonar data
- * Logs georeferenced depth data to SD card for PPK processing
+ * TTGO LoRa32 V2.0 - B-BOX PPK Logger
+ * Logs Deeper sonar depth + GPS position for PPK post-processing
+ * No real-time RTK - uses PPK correction in desktop app
  *
  * Hardware: TTGO LoRa32 V2.0 (ESP32 + SX1276 + OLED)
  *
  * Connections:
- *   TTGO IO32 (TX) -> M8P RX  - RTCM corrections IN
- *   TTGO IO33 (RX) <- M8P TX  - NMEA OUT (RTK position)
+ *   TTGO IO33 (RX) <- M8P TX  - NMEA/UBX position data
  *   Built-in SD card slot (SD_MMC 1-bit mode)
  *
  * WiFi: Connects to Deeper Chirp+2 AP for sonar data
@@ -103,9 +102,8 @@ bool imuFilterInitialized = false;
 #define SCREEN_HEIGHT 64
 
 // Here+ GPS UART (Serial1)
-#define GPS_TX_PIN   32   // TTGO TX -> M8P RX - RTCM in
 #define GPS_RX_PIN   33   // TTGO RX <- M8P TX - NMEA out
-#define GPS_BAUD     115200
+#define GPS_BAUD     115200  // High speed for 10Hz PPK
 
 // ========== LORA CONFIGURATION (MUST MATCH TRANSMITTER) ==========
 #define LORA_FREQUENCY     915E6
@@ -125,15 +123,10 @@ uint32_t loraStatusTxCount = 0;     // Count of status packets sent
 uint32_t lastLoraRx = 0;            // Last LoRa packet receive time (for yield logic)
 #define LORA_YIELD_MS 50            // Don't TX status within 50ms of receiving RTCM
 
-// RTCM via BLE counters
-uint32_t rtcmViaBleCount = 0;        // Count of RTCM messages received via BLE
-uint32_t rtcmViaBleBytes = 0;        // Total bytes received via BLE
 
 // ========== BUFFER SIZES ==========
-#define RTCM_BUFFER_SIZE   1024
 #define NMEA_BUFFER_SIZE   256
 #define UDP_BUFFER_SIZE    512
-#define FRAGMENT_TIMEOUT   500
 
 // ========== LOGGING CONFIGURATION ==========
 #define LOG_INTERVAL_MS    50       // Log at 20 Hz (matches IMU rate, captures 14 Hz depth)
@@ -146,6 +139,8 @@ uint32_t rtcmViaBleBytes = 0;        // Total bytes received via BLE
 #define UBX_CLASS_RXM   0x02
 #define UBX_ID_RAWX     0x15        // Raw measurements (pseudorange, carrier phase)
 #define UBX_ID_SFRBX    0x13        // Navigation subframes
+#define UBX_CLASS_NAV   0x01
+#define UBX_ID_PVT      0x07        // Position, velocity, time solution
 #define UBX_BUFFER_SIZE 1200        // Max size for 32 satellites
 
 // UBX parser states
@@ -177,10 +172,10 @@ uint8_t ubxId = 0;
 uint8_t ubxCkA = 0;
 uint8_t ubxCkB = 0;
 UBXState ubxState = UBX_WAIT_SYNC1;
-bool ppkLoggingEnabled = true;      // PPK raw logging enabled by default
+bool ppkLoggingEnabled = false;     // PPK raw logging starts OFF with recording
 uint32_t ubxMessagesLogged = 0;
 uint32_t ubxBytesWritten = 0;
-char rawFileName[32];
+char rawFileName[64];
 
 // ========== DEEPER/SONAR DATA ==========
 struct SonarData {
@@ -224,15 +219,6 @@ uint32_t wifiConnectStart = 0;
 uint32_t lastWifiAttempt = 0;
 bool deeperEnabled = false;
 
-// ========== FRAGMENT ASSEMBLY ==========
-uint8_t rtcmBuffer[RTCM_BUFFER_SIZE];
-uint8_t fragmentsReceived[32];
-uint16_t fragmentLengths[32];
-uint8_t expectedFragments = 0;
-uint16_t totalMessageLength = 0;
-uint32_t fragmentStartTime = 0;
-bool assemblingMessage = false;
-
 // ========== NMEA BUFFERS ==========
 char gpsNmeaBuffer[NMEA_BUFFER_SIZE];
 uint16_t gpsNmeaIndex = 0;
@@ -259,15 +245,8 @@ struct GPSStatus {
 } gps = {false, 0, 0, 0.0, 0.0, 99.9, 0.0, 0.0, 0, 0, 0, 0, 0, false};
 
 // ========== STATISTICS ==========
-uint32_t loraPacketsReceived = 0;
-uint32_t loraPacketsLost = 0;
-uint32_t rtcmMessagesOutput = 0;
-uint32_t rtcmBytesTotal = 0;
-uint32_t lastRtcmTime = 0;
-uint32_t rtcmInterval = 0;
 int16_t lastRSSI = 0;
 float lastSNR = 0;
-uint16_t lastRtcmType = 0;
 uint32_t udpPacketsReceived = 0;
 uint32_t logEntriesWritten = 0;
 
@@ -280,11 +259,9 @@ uint32_t startTime = 0;
 
 // ========== SD CARD STATE ==========
 bool sdCardReady = false;
-bool recordingEnabled = true;  // Controlled via Bluetooth
-char logFileName[32];
-
-// ========== CRC-24Q ==========
-const uint32_t CRC24Q_POLY = 0x1864CFB;
+bool recordingEnabled = false;  // Controlled via Bluetooth, starts OFF
+char logFileName[64];
+char currentProjectName[64] = "";  // Project name for file naming
 
 // ========== FUNCTION PROTOTYPES ==========
 void setupWiFi();
@@ -296,13 +273,8 @@ void parseYXMTW(char* nmea);
 void setupSDCard();
 void logData();
 void createNewLogFile();
+void createNewLogFileWithName(const char* projectName);
 void updateDisplay();
-void onLoRaReceive(int packetSize);
-void processFragment(uint8_t fragmentNum, uint8_t totalFragments, uint8_t* data, uint16_t dataLen);
-void resetFragmentAssembly();
-void outputRTCM(uint8_t* data, uint16_t length);
-bool validateRTCM(uint8_t* data, uint16_t length);
-uint32_t crc24q(const uint8_t* data, uint16_t length);
 void processGPSChar(char c);
 void processGPSByte(uint8_t byte);
 void processNMEAChar(char c);
@@ -344,24 +316,10 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo& connInfo) override {
     std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
-      // Check for RTCM binary data (starts with "RTCM:")
-      if (rxValue.length() > 5 && rxValue.substr(0, 5) == "RTCM:") {
-        // Forward raw RTCM data to GPS (skip the "RTCM:" prefix)
-        size_t rtcmLen = rxValue.length() - 5;
-        const uint8_t* rtcmData = (const uint8_t*)(rxValue.data() + 5);
-        GPSSerial.write(rtcmData, rtcmLen);
-        rtcmViaBleCount++;
-        rtcmViaBleBytes += rtcmLen;
-        // Don't log every RTCM packet - too verbose
-        if (rtcmViaBleCount % 100 == 1) {
-          Serial.printf("[BLE] RTCM: %d msgs, %d bytes total\n", rtcmViaBleCount, rtcmViaBleBytes);
-        }
-      } else {
-        // Normal text command - add to buffer
-        Serial.print("[BLE] RX: ");
-        Serial.println(rxValue.c_str());
-        bleRxBuffer += rxValue.c_str();
-      }
+      // Text command - add to buffer
+      Serial.print("[BLE] RX: ");
+      Serial.println(rxValue.c_str());
+      bleRxBuffer += rxValue.c_str();
     }
   }
 
@@ -389,7 +347,6 @@ void setup() {
   Serial.print("  Deeper SSID: "); Serial.println(DEEPER_SSID);
   Serial.print("  Deeper IP:   "); Serial.println(DEEPER_IP);
   Serial.print("  UDP Port:    "); Serial.println(DEEPER_UDP_PORT);
-  Serial.print("  GPS TX Pin:  IO"); Serial.println(GPS_TX_PIN);
   Serial.print("  GPS RX Pin:  IO"); Serial.println(GPS_RX_PIN);
   Serial.println("  SD Card:     Built-in (SD_MMC 1-bit mode)");
   Serial.print("  LoRa SF:     "); Serial.println(LORA_SPREAD_FACTOR);
@@ -429,7 +386,7 @@ void setup() {
 
   // Init GPS UART
   Serial.print("[INIT] GPS UART... ");
-  GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+  GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, -1);  // RX only, no TX needed
   Serial.println("OK");
 
   // Phase 1: Set WiFi mode (needed for BLE coexistence)
@@ -448,7 +405,6 @@ void setup() {
   // Phase 2: Start WiFi connection (after SD init)
   startWiFiConnection();
 
-  resetFragmentAssembly();
 
   Serial.println();
   Serial.println("*** RECEIVER READY (BLE) ***");
@@ -457,13 +413,7 @@ void setup() {
 
 // ========== MAIN LOOP ==========
 void loop() {
-  // 1. Check for LoRa packets (RTK corrections)
-  int packetSize = LoRa.parsePacket();
-  if (packetSize) {
-    onLoRaReceive(packetSize);
-  }
-
-  // 2. Handle WiFi connection state machine
+  // 1. Handle WiFi connection state machine
   handleWiFi();
 
   // 3. Process UDP data from Deeper
@@ -472,15 +422,63 @@ void loop() {
   }
 
   // 4. Read NMEA from RTK GPS (M8P)
+  static uint32_t gpsRxBytes = 0;
+  static uint32_t lastGpsDebug = 0;
   while (GPSSerial.available()) {
     char c = GPSSerial.read();
+    gpsRxBytes++;
     processGPSChar(c);
   }
+  // Debug: print GPS byte count every 5 seconds
+  if (millis() - lastGpsDebug > 5000) {
+    Serial.print("[GPS DEBUG] Bytes received: ");
+    Serial.println(gpsRxBytes);
+    lastGpsDebug = millis();
+  }
 
-  // 5. Fragment timeout check
-  if (assemblingMessage && (millis() - fragmentStartTime > FRAGMENT_TIMEOUT)) {
-    loraPacketsLost++;
-    resetFragmentAssembly();
+  // 4b. Handle USB serial commands
+  static char serialCmd[32];
+  static int serialCmdIdx = 0;
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == 10 || c == 13) {
+      if (serialCmdIdx > 0) {
+        serialCmd[serialCmdIdx] = 0;
+        if (strcmp(serialCmd, "LOOPBACK") == 0) {
+          Serial.println("[LOOPBACK] Starting test - connect GPIO32 to GPIO33");
+          while (GPSSerial.available()) GPSSerial.read();
+          uint8_t testPattern[] = {0xAA, 0x55, 0x12, 0x34, 0xD3};
+          GPSSerial.write(testPattern, 5);
+          GPSSerial.flush();
+          Serial.println("[LOOPBACK] Sent: AA 55 12 34 D3");
+          delay(100);
+          int received = 0;
+          uint8_t rxBuf[10];
+          while (GPSSerial.available() && received < 10) {
+            rxBuf[received++] = GPSSerial.read();
+          }
+          if (received == 0) {
+            Serial.println("[LOOPBACK] FAIL - No data received!");
+          } else {
+            Serial.print("[LOOPBACK] Received: ");
+            for (int i = 0; i < received; i++) {
+              if (rxBuf[i] < 0x10) Serial.print("0");
+              Serial.print(rxBuf[i], HEX);
+              Serial.print(" ");
+            }
+            Serial.println();
+            bool match = (received >= 5);
+            for (int i = 0; i < 5 && match; i++) {
+              if (rxBuf[i] != testPattern[i]) match = false;
+            }
+            Serial.println(match ? "[LOOPBACK] PASS!" : "[LOOPBACK] FAIL - mismatch!");
+          }
+        }
+        serialCmdIdx = 0;
+      }
+    } else if (serialCmdIdx < 31) {
+      serialCmd[serialCmdIdx++] = c;
+    }
   }
 
   // 6. Log data to SD card
@@ -555,7 +553,7 @@ void loop() {
 void setupBLE() {
   Serial.print("[INIT] BLE... ");
 
-  NimBLEDevice::init("DeeperRTK");
+  NimBLEDevice::init("BBOX");
 
   // Create BLE Server
   pServer = NimBLEDevice::createServer();
@@ -584,11 +582,11 @@ void setupBLE() {
   // Start advertising
   NimBLEAdvertising *pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setName("DeeperRTK");  // Include name in advertisement
+  pAdvertising->setName("BBOX");  // Include name in advertisement
   pAdvertising->enableScanResponse(true);
   pAdvertising->start();
 
-  Serial.println("OK - Name: DeeperRTK");
+  Serial.println("OK - Name: BBOX");
 }
 
 // ========== WIFI SETUP (Phase 1: Mode only) ==========
@@ -852,31 +850,74 @@ void setupSDCard() {
   Serial.println(" MB");
 
   sdCardReady = true;
-  createNewLogFile();
+  // Don't create log file on startup - wait for START command
+  Serial.println("[SD] Ready - waiting for START command to begin recording");
 }
 
 // ========== CREATE NEW LOG FILE ==========
 void createNewLogFile() {
+  // Use current project name if set, otherwise use numbered naming
+  createNewLogFileWithName(currentProjectName[0] ? currentProjectName : NULL);
+}
+
+void createNewLogFileWithName(const char* projectName) {
   if (!sdCardReady) return;
 
-  // Find next available file number
-  int fileNum = 0;
-  do {
-    snprintf(logFileName, sizeof(logFileName), "/log_%04d.csv", fileNum++);
-  } while (SD_MMC.exists(logFileName) && fileNum < 10000);
-  fileNum--;  // Back to the number we're using
+  if (projectName && projectName[0]) {
+    // Use project name for files - using String for safety
+    String baseName = "/";
+    baseName += projectName;
+    String csvName = baseName + ".csv";
+    String ubxName = baseName + ".ubx";
+
+    // If files already exist, append a number to avoid overwriting
+    int suffix = 1;
+    strncpy(logFileName, csvName.c_str(), sizeof(logFileName) - 1);
+    logFileName[sizeof(logFileName) - 1] = '\0';
+    while (SD_MMC.exists(logFileName) && suffix < 100) {
+      csvName = baseName + "_" + String(suffix) + ".csv";
+      ubxName = baseName + "_" + String(suffix) + ".ubx";
+      strncpy(logFileName, csvName.c_str(), sizeof(logFileName) - 1);
+      logFileName[sizeof(logFileName) - 1] = '\0';
+      suffix++;
+    }
+    // Copy final names
+    strncpy(logFileName, csvName.c_str(), sizeof(logFileName) - 1);
+    logFileName[sizeof(logFileName) - 1] = '\0';
+    strncpy(rawFileName, ubxName.c_str(), sizeof(rawFileName) - 1);
+    rawFileName[sizeof(rawFileName) - 1] = '\0';
+
+    Serial.print("[SD] Using project name: ");
+    Serial.println(projectName);
+    Serial.print("[SD] CSV file will be: ");
+    Serial.println(logFileName);
+    Serial.print("[SD] UBX file will be: ");
+    Serial.println(rawFileName);
+  } else {
+    // Find next available file number (legacy numbered naming)
+    int fileNum = 0;
+    do {
+      snprintf(logFileName, sizeof(logFileName), "/log_%04d.csv", fileNum++);
+    } while (SD_MMC.exists(logFileName) && fileNum < 10000);
+    fileNum--;  // Back to the number we're using
+    snprintf(rawFileName, sizeof(rawFileName), "/raw_%04d.ubx", fileNum);
+  }
 
   logFile = SD_MMC.open(logFileName, FILE_WRITE);
   if (logFile) {
     // Write CSV header
-    logFile.println("timestamp_ms,utc_time,gps_fix,lat,lon,alt_m,hdop,sats,rtcm_age_s,depth_m,water_temp_c,rssi,snr,pitch,roll");
+    logFile.println("timestamp_ms,utc_time,gps_fix,lat,lon,alt_m,hdop,sats,depth_m,water_temp_c,rssi,snr,pitch,roll");
     logFile.flush();
 
     Serial.print("[SD] Logging to: ");
     Serial.println(logFileName);
-    
+
     // Create matching UBX raw file for PPK
-    snprintf(rawFileName, sizeof(rawFileName), "/raw_%04d.ubx", fileNum);
+    Serial.print("[SD] rawFileName = '");
+    Serial.print(rawFileName);
+    Serial.print("' (len=");
+    Serial.print(strlen(rawFileName));
+    Serial.println(")");
     rawFile = SD_MMC.open(rawFileName, FILE_WRITE);
     if (rawFile) {
       Serial.print("[SD] PPK raw file: ");
@@ -919,8 +960,6 @@ void logData() {
   logFile.print(gps.hdop, 2);
   logFile.print(",");
   logFile.print(gps.satellites);
-  logFile.print(",");
-  logFile.print(gps.rtcmAge, 1);
   logFile.print(",");
 
   if (sonar.valid && (millis() - sonar.lastUpdate < 5000)) {
@@ -989,22 +1028,16 @@ void updateDisplay() {
   }
   display.println();
 
-  // Row 3: RTCM Age
-  display.print("RTCM:");
-  if (gps.rtcmAge > 0 && gps.rtcmAge < 100) {
-    display.print(gps.rtcmAge, 1);
-    display.print("s");
-  } else {
-    display.print("N/A");
-  }
+  // Row 3: Altitude
+  display.print("Alt:");
+  display.print(gps.altitude, 1);
+  display.print("m");
   display.println();
 
-  // Row 4: LoRa packets RX/TX
-  display.print("RX:");
-  display.print(loraPacketsReceived);
-  display.print(" TX:");
+  // Row 4: LoRa status TX / RSSI
+  display.print("TX:");
   display.print(loraStatusTxCount);
-  display.print(" R:");
+  display.print(" RSSI:");
   display.println(lastRSSI);
 
   // Row 5: WiFi/Deeper status + BLE
@@ -1021,15 +1054,15 @@ void updateDisplay() {
   display.print(bleConnected ? "Y" : "N");
   display.println();
 
-  // Row 6: SD status / RTCM count
+  // Row 6: SD status / PPK status
   display.print("SD:");
   if (sdCardReady) {
     display.print(logEntriesWritten);
   } else {
     display.print("NO");
   }
-  display.print(" RTCM:");
-  display.print(rtcmMessagesOutput);
+  display.print(" PPK:");
+  display.print(ubxMessagesLogged);
 
   display.display();
 }
@@ -1040,7 +1073,7 @@ void printStatsReport() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("       DEEPER + RTK STATUS REPORT");
+  Serial.println("       B-BOX PPK STATUS REPORT");
   Serial.println("              (BLE Version)");
   Serial.println("========================================");
 
@@ -1062,7 +1095,6 @@ void printStatsReport() {
   Serial.print("  Position: ");
   Serial.print(gps.latitude, 7); Serial.print(", ");
   Serial.println(gps.longitude, 7);
-  Serial.print("  RTCM Age: "); Serial.print(gps.rtcmAge, 1); Serial.println("s");
   Serial.println();
 
   Serial.println("--- SONAR STATUS ---");
@@ -1088,12 +1120,10 @@ void printStatsReport() {
   }
   Serial.println();
 
-  Serial.println("--- LORA LINK ---");
+  Serial.println("--- LORA TELEMETRY ---");
+  Serial.print("  Status TX Count: "); Serial.println(loraStatusTxCount);
   Serial.print("  RSSI: "); Serial.print(lastRSSI); Serial.println(" dBm");
   Serial.print("  SNR: "); Serial.print(lastSNR, 1); Serial.println(" dB");
-  Serial.print("  Packets RX: "); Serial.println(loraPacketsReceived);
-  Serial.print("  Packets Lost: "); Serial.println(loraPacketsLost);
-  Serial.print("  RTCM Messages: "); Serial.println(rtcmMessagesOutput);
   Serial.println();
 
   Serial.println("--- BLE STATUS ---");
@@ -1121,9 +1151,68 @@ void printStatsReport() {
 
 // ========== UBX MESSAGE LOGGING FOR PPK ==========
 void writeUBXMessage() {
-  if (!rawFile || !ppkLoggingEnabled) return;
+  // Parse NAV-PVT for position data (replaces NMEA parsing)
+  if (ubxClass == UBX_CLASS_NAV && ubxId == UBX_ID_PVT && ubxPayloadLen >= 92) {
+    uint8_t* payload = &ubxBuffer[6];  // Skip header
 
-  // Only log RAWX and SFRBX messages (needed for PPK)
+    // Extract time (bytes 0-5)
+    uint16_t year = payload[4] | (payload[5] << 8);
+    uint8_t month = payload[6];
+    uint8_t day = payload[7];
+    gps.utcHours = payload[8];
+    gps.utcMinutes = payload[9];
+    gps.utcSeconds = payload[10];
+    int32_t nano = payload[16] | (payload[17] << 8) | (payload[18] << 16) | (payload[19] << 24);
+    gps.utcMillis = (nano / 1000000) % 1000;
+    if (gps.utcMillis < 0) gps.utcMillis = 0;
+    gps.timeValid = (payload[11] & 0x03) == 0x03;  // validDate and validTime
+
+    // Fix type (byte 20)
+    uint8_t fixType = payload[20];
+    uint8_t flags = payload[21];
+    bool gnssFixOK = (flags & 0x01) != 0;
+    uint8_t carrSoln = (flags >> 6) & 0x03;  // RTK status: 0=none, 1=float, 2=fixed
+
+    // Convert to NMEA fix quality
+    if (!gnssFixOK || fixType < 2) {
+      gps.fixQuality = 0;  // No fix
+    } else if (carrSoln == 2) {
+      gps.fixQuality = 4;  // RTK Fixed
+    } else if (carrSoln == 1) {
+      gps.fixQuality = 5;  // RTK Float
+    } else if (fixType == 2) {
+      gps.fixQuality = 2;  // DGPS (2D fix)
+    } else {
+      gps.fixQuality = 1;  // GPS (3D fix)
+    }
+
+    // Satellites (byte 23)
+    gps.satellites = payload[23];
+
+    // Longitude (bytes 24-27) - 1e-7 degrees
+    int32_t lon = payload[24] | (payload[25] << 8) | (payload[26] << 16) | (payload[27] << 24);
+    gps.longitude = lon * 1e-7;
+
+    // Latitude (bytes 28-31) - 1e-7 degrees
+    int32_t lat = payload[28] | (payload[29] << 8) | (payload[30] << 16) | (payload[31] << 24);
+    gps.latitude = lat * 1e-7;
+
+    // Altitude (bytes 36-39) - mm above ellipsoid
+    int32_t alt = payload[36] | (payload[37] << 8) | (payload[38] << 16) | (payload[39] << 24);
+    gps.altitude = alt / 1000.0f;
+
+    // PDOP (bytes 76-77) - 0.01 scale
+    uint16_t pDOP = payload[76] | (payload[77] << 8);
+    gps.hdop = pDOP / 100.0f;
+
+    gps.valid = gnssFixOK && (gps.latitude != 0.0 || gps.longitude != 0.0);
+    gps.lastUpdate = millis();
+
+    return;  // Don't log NAV-PVT to raw file
+  }
+
+  // Log RAWX and SFRBX messages to raw file (needed for PPK)
+  if (!rawFile || !ppkLoggingEnabled) return;
   if (ubxClass == UBX_CLASS_RXM && (ubxId == UBX_ID_RAWX || ubxId == UBX_ID_SFRBX)) {
     size_t totalLen = 6 + ubxPayloadLen + 2;
     rawFile.write(ubxBuffer, totalLen);
@@ -1250,7 +1339,20 @@ void processGPSChar(char c) {
 
 // ========== PARSE GPS NMEA (GGA from M8P) ==========
 void parseGPSNmea(char* nmea) {
+  // Debug: print first 20 chars of each NMEA sentence
+  static uint32_t lastNmeaDebug = 0;
+  if (millis() - lastNmeaDebug > 2000) {
+    Serial.print("[NMEA] ");
+    char temp[25];
+    strncpy(temp, nmea, 24);
+    temp[24] = 0;
+    Serial.println(temp);
+    lastNmeaDebug = millis();
+  }
+
   if (strstr(nmea, "GGA") != NULL) {
+    Serial.print("[GGA FOUND] ");
+    Serial.println(nmea);
     char temp[NMEA_BUFFER_SIZE];
     strncpy(temp, nmea, NMEA_BUFFER_SIZE);
 
@@ -1305,226 +1407,6 @@ void parseGPSNmea(char* nmea) {
       gps.lastUpdate = millis();
     }
   }
-}
-
-// ========== PROCESS LORA COMMAND ==========
-void processLoRaCommand(const char* cmd) {
-  Serial.print("[LORA CMD] Received: ");
-  Serial.println(cmd);
-
-  if (strcmp(cmd, "START") == 0) {
-    recordingEnabled = true;
-    Serial.println("[LORA CMD] Recording STARTED");
-  }
-  else if (strcmp(cmd, "STOP") == 0) {
-    recordingEnabled = false;
-    Serial.println("[LORA CMD] Recording STOPPED");
-  }
-  else if (strcmp(cmd, "FREQ_WIDE") == 0) {
-    sendDeeperCommand("$DEEP230,3*3C");
-    Serial.println("[LORA CMD] Deeper set to WIDE");
-  }
-  else if (strcmp(cmd, "FREQ_MED") == 0) {
-    sendDeeperCommand("$DEEP230,4*3D");
-    Serial.println("[LORA CMD] Deeper set to MEDIUM");
-  }
-  else if (strcmp(cmd, "FREQ_NARROW") == 0) {
-    sendDeeperCommand("$DEEP230,5*3E");
-    Serial.println("[LORA CMD] Deeper set to NARROW");
-  }
-  else {
-    Serial.print("[LORA CMD] Unknown command: ");
-    Serial.println(cmd);
-  }
-}
-
-// ========== LORA RECEIVE ==========
-void onLoRaReceive(int packetSize) {
-  if (packetSize < 3) return;
-
-  lastLoraRx = millis();  // Track receive time for yield logic
-  lastRSSI = LoRa.packetRssi();
-  lastSNR = LoRa.packetSnr();
-  loraPacketsReceived++;
-
-  // Check first byte for packet type
-  uint8_t firstByte = LoRa.peek();
-  
-  // Debug: log all received packets
-  Serial.print("[LORA RX] Size:");
-  Serial.print(packetSize);
-  Serial.print(" First:0x");
-  Serial.print(firstByte, HEX);
-  Serial.print(" RSSI:");
-  Serial.println(lastRSSI);
-
-  // Handle command packets from Shore Station (0xCC)
-  if (firstByte == COMMAND_PACKET_TYPE) {
-    LoRa.read();  // consume the magic byte
-    char cmdBuf[32];
-    int idx = 0;
-    while (LoRa.available() && idx < 31) {
-      cmdBuf[idx++] = LoRa.read();
-    }
-    cmdBuf[idx] = '\0';
-    Serial.print("[CMD PKT] Got command: '");
-    Serial.print(cmdBuf);
-    Serial.print("' len=");
-    Serial.println(idx);
-    processLoRaCommand(cmdBuf);
-    return;
-  } else {
-    Serial.print("[LORA] Not a command packet, first byte: 0x");
-    Serial.println(firstByte, HEX);
-  }
-
-  uint8_t fragmentNum = LoRa.read();
-  uint8_t totalFragments = LoRa.read();
-
-  uint16_t dataLen;
-  uint8_t tempBuffer[256];
-
-  if (fragmentNum == 0) {
-    if (packetSize < 5) return;
-    LoRa.read();  // timestamp low - skip
-    LoRa.read();  // timestamp high - skip
-    dataLen = packetSize - 4;
-  } else {
-    dataLen = packetSize - 2;
-  }
-
-  for (uint16_t i = 0; i < dataLen && i < 256; i++) {
-    tempBuffer[i] = LoRa.read();
-  }
-
-  processFragment(fragmentNum, totalFragments, tempBuffer, dataLen);
-}
-
-// ========== FRAGMENT PROCESSING ==========
-void processFragment(uint8_t fragmentNum, uint8_t totalFragments,
-                     uint8_t* data, uint16_t dataLen) {
-
-  if (totalFragments == 0 || totalFragments > 32 || fragmentNum >= totalFragments) {
-    return;
-  }
-
-  if (!assemblingMessage) {
-    assemblingMessage = true;
-    expectedFragments = totalFragments;
-    fragmentStartTime = millis();
-    totalMessageLength = 0;
-    memset(fragmentsReceived, 0, sizeof(fragmentsReceived));
-    memset(fragmentLengths, 0, sizeof(fragmentLengths));
-  }
-
-  if (totalFragments != expectedFragments) {
-    resetFragmentAssembly();
-    assemblingMessage = true;
-    expectedFragments = totalFragments;
-    fragmentStartTime = millis();
-    memset(fragmentLengths, 0, sizeof(fragmentLengths));
-  }
-
-  // Fragment offset calculation (critical!)
-  uint16_t fragmentOffset;
-  if (fragmentNum == 0) {
-    fragmentOffset = 0;
-  } else {
-    fragmentOffset = 246 + (fragmentNum - 1) * 248;
-  }
-
-  if (fragmentOffset + dataLen > RTCM_BUFFER_SIZE) {
-    resetFragmentAssembly();
-    return;
-  }
-
-  memcpy(rtcmBuffer + fragmentOffset, data, dataLen);
-  fragmentsReceived[fragmentNum / 8] |= (1 << (fragmentNum % 8));
-  fragmentLengths[fragmentNum] = dataLen;
-
-  // Check if all fragments received
-  bool allReceived = true;
-  for (uint8_t i = 0; i < totalFragments; i++) {
-    if (!(fragmentsReceived[i / 8] & (1 << (i % 8)))) {
-      allReceived = false;
-      break;
-    }
-  }
-
-  if (allReceived) {
-    totalMessageLength = 0;
-    for (uint8_t i = 0; i < totalFragments; i++) {
-      totalMessageLength += fragmentLengths[i];
-    }
-
-    if (rtcmBuffer[0] == 0xD3) {
-      outputRTCM(rtcmBuffer, totalMessageLength);
-      rtcmMessagesOutput++;
-      rtcmBytesTotal += totalMessageLength;
-
-      uint32_t now = millis();
-      if (lastRtcmTime > 0) {
-        rtcmInterval = now - lastRtcmTime;
-      }
-      lastRtcmTime = now;
-    }
-
-    resetFragmentAssembly();
-  }
-}
-
-// ========== RESET FRAGMENT STATE ==========
-void resetFragmentAssembly() {
-  assemblingMessage = false;
-  expectedFragments = 0;
-  totalMessageLength = 0;
-  fragmentStartTime = 0;
-  memset(fragmentsReceived, 0, sizeof(fragmentsReceived));
-  memset(fragmentLengths, 0, sizeof(fragmentLengths));
-}
-
-// ========== CRC-24Q VALIDATION ==========
-uint32_t crc24q(const uint8_t* data, uint16_t length) {
-  uint32_t crc = 0;
-  for (uint16_t i = 0; i < length; i++) {
-    crc ^= ((uint32_t)data[i]) << 16;
-    for (int j = 0; j < 8; j++) {
-      crc <<= 1;
-      if (crc & 0x1000000) {
-        crc ^= CRC24Q_POLY;
-      }
-    }
-  }
-  return crc & 0xFFFFFF;
-}
-
-bool validateRTCM(uint8_t* data, uint16_t length) {
-  if (length < 6) return false;
-  if (data[0] != 0xD3) return false;
-
-  uint16_t msgLen = ((data[1] & 0x03) << 8) | data[2];
-  if (length != msgLen + 6) return false;
-
-  uint32_t calcCRC = crc24q(data, length - 3);
-  uint32_t msgCRC = ((uint32_t)data[length-3] << 16) |
-                    ((uint32_t)data[length-2] << 8) |
-                    data[length-1];
-
-  return (calcCRC == msgCRC);
-}
-
-// ========== OUTPUT RTCM ==========
-void outputRTCM(uint8_t* data, uint16_t length) {
-  if (length >= 6 && data[0] == 0xD3) {
-    lastRtcmType = (data[3] << 4) | (data[4] >> 4);
-
-    if (!validateRTCM(data, length)) {
-      // Skip corrupted messages
-      return;
-    }
-  }
-
-  GPSSerial.write(data, length);
 }
 
 // ========== BLE SEND FUNCTION ==========
@@ -1603,7 +1485,7 @@ void sendLoRaStatus() {
   }
   status += ",";
   // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
-  bool loraGpsValid = localGpsValid && 
+  bool loraGpsValid = localGpsValid &&
                       localSatellites >= 4 &&
                       localLatitude != 0.0 && localLongitude != 0.0 &&
                       localLatitude > -90.0 && localLatitude < 90.0 &&
@@ -1716,16 +1598,149 @@ void handleBluetooth() {
     bleRxBuffer = bleRxBuffer.substring(newlineIdx + 1);
     cmd.trim();
 
-    if (cmd == "START") {
+    if (cmd == "START" || cmd.startsWith("START:")) {
+      // Extract project name if provided (START:ProjectName)
+      if (cmd.startsWith("START:")) {
+        String projName = cmd.substring(6);
+        projName.trim();
+        // Sanitize: remove invalid filename chars
+        for (int i = 0; i < projName.length(); i++) {
+          char c = projName.charAt(i);
+          if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            projName.setCharAt(i, '_');
+          }
+        }
+        strncpy(currentProjectName, projName.c_str(), sizeof(currentProjectName) - 1);
+        currentProjectName[sizeof(currentProjectName) - 1] = '\0';
+        Serial.print("[BLE] Project name: ");
+        Serial.println(currentProjectName);
+      } else {
+        currentProjectName[0] = '\0';  // No project name
+      }
+
+      // Create new log files if not already open
+      if (!logFile) {
+        createNewLogFile();
+      }
       recordingEnabled = true;
+      ppkLoggingEnabled = true;  // Enable PPK logging with recording
       bleSend("OK:REC_ON\n");
-      Serial.println("[BLE] Recording started");
+      Serial.println("[BLE] Recording started (CSV + PPK)");
     } else if (cmd == "STOP") {
       recordingEnabled = false;
+      ppkLoggingEnabled = false;  // Stop PPK logging with recording
+      // Flush and close files
+      if (logFile) {
+        logFile.flush();
+        logFile.close();
+        logFile = File();  // Reset to invalid state for next START
+        Serial.println("[SD] Log file closed");
+      }
+      if (rawFile) {
+        rawFile.flush();
+        rawFile.close();
+        rawFile = File();  // Reset to invalid state for next START
+        Serial.println("[SD] PPK file closed");
+      }
       bleSend("OK:REC_OFF\n");
-      Serial.println("[BLE] Recording stopped");
+      Serial.println("[BLE] Recording stopped (files closed)");
+    } else if (cmd == "RESTART_LOG" || cmd.startsWith("RESTART_LOG:")) {
+      // Force restart logging - closes any stuck files and reopens fresh
+      Serial.println("[BLE] RESTART_LOG - forcing fresh start");
+
+      // Extract project name if provided
+      if (cmd.startsWith("RESTART_LOG:")) {
+        String projName = cmd.substring(12);
+        projName.trim();
+        for (int i = 0; i < projName.length(); i++) {
+          char c = projName.charAt(i);
+          if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') {
+            projName.setCharAt(i, '_');
+          }
+        }
+        strncpy(currentProjectName, projName.c_str(), sizeof(currentProjectName) - 1);
+        currentProjectName[sizeof(currentProjectName) - 1] = '\0';
+      }
+
+      // Close existing files
+      if (logFile) {
+        logFile.flush();
+        logFile.close();
+        logFile = File();
+      }
+      if (rawFile) {
+        rawFile.flush();
+        rawFile.close();
+        rawFile = File();
+      }
+      // Create new files
+      createNewLogFile();
+      recordingEnabled = true;
+      ppkLoggingEnabled = true;
+      bleSend("OK:RESTART_LOG\n");
+      Serial.println("[BLE] Recording restarted with fresh files");
+    } else if (cmd == "REC_STATUS") {
+      // Detailed recording status - helps app detect stagnant state
+      char statusBuf[64];
+      snprintf(statusBuf, sizeof(statusBuf), "REC:%d,FILES:%d,%d\n",
+               recordingEnabled ? 1 : 0,
+               logFile ? 1 : 0,
+               rawFile ? 1 : 0);
+      bleSend(statusBuf);
     } else if (cmd == "STATUS") {
       sendBluetoothStatus();
+    } else if (cmd == "LOOPBACK") {
+      // Loopback test: send bytes on TX and check if received on RX
+      // User should connect GPIO32 to GPIO33 temporarily
+      Serial.println("[LOOPBACK] Starting test - connect GPIO32 to GPIO33");
+
+      // Clear any pending RX data
+      while (GPSSerial.available()) GPSSerial.read();
+
+      // Send test pattern
+      uint8_t testPattern[] = {0xAA, 0x55, 0x12, 0x34, 0xD3};
+      GPSSerial.write(testPattern, 5);
+      GPSSerial.flush();
+      Serial.println("[LOOPBACK] Sent: AA 55 12 34 D3");
+
+      // Wait for data to come back
+      delay(100);
+
+      // Read back
+      int received = 0;
+      uint8_t rxBuf[10];
+      while (GPSSerial.available() && received < 10) {
+        rxBuf[received++] = GPSSerial.read();
+      }
+
+      if (received == 0) {
+        Serial.println("[LOOPBACK] FAIL - No data received! TX not working or not connected.");
+        bleSend("LOOPBACK:FAIL,NO_DATA");
+      } else {
+        Serial.print("[LOOPBACK] Received ");
+        Serial.print(received);
+        Serial.print(" bytes: ");
+        for (int i = 0; i < received; i++) {
+          if (rxBuf[i] < 0x10) Serial.print("0");
+          Serial.print(rxBuf[i], HEX);
+          Serial.print(" ");
+        }
+        Serial.println();
+
+        // Check if matches
+        bool match = (received >= 5);
+        for (int i = 0; i < 5 && match; i++) {
+          if (rxBuf[i] != testPattern[i]) match = false;
+        }
+
+        if (match) {
+          Serial.println("[LOOPBACK] PASS - TX is working!");
+          bleSend("LOOPBACK:PASS");
+        } else {
+          Serial.println("[LOOPBACK] FAIL - Data mismatch!");
+          bleSend("LOOPBACK:FAIL,MISMATCH");
+        }
+      }
     } else if (cmd == "FREQ_WIDE") {
       sendDeeperCommand(DEEPER_WIDE_CMD);
       bleSend("OK:FREQ_WIDE\n");
@@ -1774,11 +1789,6 @@ void handleBluetooth() {
       snprintf(buf, sizeof(buf), "LORA:%s,TX:%lu\n",
                loraTelemEnabled ? "ON" : "OFF",
                loraStatusTxCount);
-      bleSend(buf);
-    } else if (cmd == "RTCM_STATUS") {
-      char buf[64];
-      snprintf(buf, sizeof(buf), "RTCM_BLE:%lu,%lu\n",
-               rtcmViaBleCount, rtcmViaBleBytes);
       bleSend(buf);
     }
   }
@@ -1918,7 +1928,12 @@ void handleListLogs() {
   File file = root.openNextFile();
   while (file) {
     String name = file.name();
-    if (name.startsWith("log_") && name.endsWith(".csv")) {
+    String nameLower = name;
+    nameLower.toLowerCase();
+    // Include ALL .csv and .ubx files (case-insensitive)
+    bool isCsvFile = nameLower.endsWith(".csv");
+    bool isUbxFile = nameLower.endsWith(".ubx");
+    if (isCsvFile || isUbxFile) {
       if (!first) response += ";";
       first = false;
       response += name + "," + String(file.size()) + "," + String(file.getLastWrite());
@@ -2017,9 +2032,10 @@ void handleDeleteAllLogs() {
   File file = root.openNextFile();
   while (file && fileCount < 100) {
     String name = file.name();
-    // Delete both CSV and UBX files
-    if ((name.startsWith("log_") && name.endsWith(".csv")) ||
-        (name.startsWith("raw_") && name.endsWith(".ubx"))) {
+    String nameLower = name;
+    nameLower.toLowerCase();
+    // Delete all CSV and UBX files (supports both legacy and project naming)
+    if (nameLower.endsWith(".csv") || nameLower.endsWith(".ubx")) {
       filesToDelete[fileCount++] = "/" + name;
     }
     file.close();
@@ -2123,3 +2139,4 @@ void saveIMUCalibration() {
 
   Serial.println("[IMU] Calibration saved to flash");
 }
+

@@ -13,12 +13,453 @@
         android:background="#16213e"
         app:tabTextColor="#888888"
         app:tabSelectedTextColor="#ffffff"
-        app:tabIndicatorColor="#00bcd4"/>
+        app:tabIndicatorColor="#00bcd4"
+        app:tabMode="fixed"
+        app:tabGravity="fill"
+        app:tabMaxWidth="0dp"/>
 
     <ViewFlipper
         android:id="@+id/viewFlipper"
         android:layout_width="match_parent"
         android:layout_height="match_parent">
+        
+        <!-- Project Tab Content with ViewFlipper for list/detail -->
+        <ViewFlipper
+            android:id="@+id/projectViewFlipper"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <!-- View 0: Project List -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:orientation="vertical"
+                android:padding="16dp">
+
+                <!-- Header -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Projects"
+                    android:textColor="#ffffff"
+                    android:textSize="24sp"
+                    android:textStyle="bold"
+                    android:layout_marginBottom="16dp"/>
+
+                <!-- Button Row -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:layout_marginBottom="16dp">
+
+                    <Button
+                        android:id="@+id/newProjectButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="New Project"
+                        android:backgroundTint="#4caf50"
+                        android:layout_marginEnd="8dp"/>
+
+                    <Button
+                        android:id="@+id/importRinexButton"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Import RINEX"
+                        android:backgroundTint="#FF9800"/>
+
+                </LinearLayout>
+
+                <!-- Projects List Header -->
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Recent Projects"
+                    android:textColor="#888888"
+                    android:textSize="14sp"
+                    android:layout_marginBottom="8dp"/>
+
+                <!-- Projects List -->
+                <ListView
+                    android:id="@+id/projectsListView"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:background="#16213e"
+                    android:divider="#333333"
+                    android:dividerHeight="1dp"
+                    android:scrollbars="vertical"
+                    android:fadeScrollbars="false"/>
+
+            </LinearLayout>
+
+            <!-- View 1: Project Detail -->
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="match_parent">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <!-- Header with back button -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="16dp">
+
+                        <Button
+                            android:id="@+id/btnBackToList"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Back"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#444466"/>
+
+                        <TextView
+                            android:id="@+id/tvDetailProjectName"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Project Name"
+                            android:textColor="#ffffff"
+                            android:textSize="20sp"
+                            android:textStyle="bold"
+                            android:gravity="center"
+                            android:layout_marginStart="8dp"/>
+
+                        <View
+                            android:layout_width="60dp"
+                            android:layout_height="1dp"/>
+                    </LinearLayout>
+
+                    <!-- Project Info Section -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#16213e"
+                        android:padding="12dp"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Project Info"
+                            android:textColor="#00bcd4"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:layout_marginBottom="8dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Status: "
+                                android:textColor="#aaaaaa"
+                                android:textSize="14sp"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailStatus"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Ready to Record"
+                                android:textColor="#ffffff"
+                                android:textSize="14sp"/>
+                        </LinearLayout>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:layout_marginTop="4dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Created: "
+                                android:textColor="#aaaaaa"
+                                android:textSize="14sp"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailCreated"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="--"
+                                android:textColor="#ffffff"
+                                android:textSize="14sp"/>
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <!-- Rover Data Section -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#16213e"
+                        android:padding="12dp"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Rover Data (B-Box)"
+                            android:textColor="#00bcd4"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:layout_marginBottom="8dp"/>
+
+                        <!-- UBX File -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <View
+                                android:id="@+id/indicatorDetailUbx"
+                                android:layout_width="12dp"
+                                android:layout_height="12dp"
+                                android:background="#888888"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailUbxFile"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="raw_XXXX.ubx (PPK data)"
+                                android:textColor="#ffffff"
+                                android:textSize="14sp"
+                                android:layout_marginStart="8dp"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailUbxStatus"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Not downloaded"
+                                android:textColor="#888888"
+                                android:textSize="12sp"/>
+                        </LinearLayout>
+
+                        <!-- CSV File -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical"
+                            android:layout_marginTop="6dp">
+
+                            <View
+                                android:id="@+id/indicatorDetailCsv"
+                                android:layout_width="12dp"
+                                android:layout_height="12dp"
+                                android:background="#888888"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailCsvFile"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="log_XXXX.csv (depth/IMU)"
+                                android:textColor="#ffffff"
+                                android:textSize="14sp"
+                                android:layout_marginStart="8dp"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailCsvStatus"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Not downloaded"
+                                android:textColor="#888888"
+                                android:textSize="12sp"/>
+                        </LinearLayout>
+
+                        <!-- Download Button -->
+                        <Button
+                            android:id="@+id/btnDetailDownloadRover"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Download from B-Box"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#00bcd4"
+                            android:layout_marginTop="12dp"/>
+
+                        <!-- Download Progress -->
+                        <LinearLayout
+                            android:id="@+id/layoutDetailRoverProgress"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:visibility="gone"
+                            android:layout_marginTop="8dp">
+
+                            <ProgressBar
+                                android:id="@+id/progressDetailRover"
+                                style="@android:style/Widget.ProgressBar.Horizontal"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:max="100"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailRoverProgress"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Downloading... 0%"
+                                android:textColor="#ffffff"
+                                android:textSize="12sp"
+                                android:layout_marginTop="4dp"/>
+                        </LinearLayout>
+                    </LinearLayout>
+
+                    <!-- Base Data Section -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#16213e"
+                        android:padding="12dp"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Base Data (Shore Station)"
+                            android:textColor="#00bcd4"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:layout_marginBottom="8dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <View
+                                android:id="@+id/indicatorDetailRtcm"
+                                android:layout_width="12dp"
+                                android:layout_height="12dp"
+                                android:background="#888888"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailRtcmFile"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="No base file"
+                                android:textColor="#ffffff"
+                                android:textSize="14sp"
+                                android:layout_marginStart="8dp"/>
+                        </LinearLayout>
+
+                        <Button
+                            android:id="@+id/btnDetailFindBaseFile"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Auto-find Matching Base File"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#00bcd4"
+                            android:layout_marginTop="12dp"/>
+
+                        <Button
+                            android:id="@+id/btnDetailImportRinex"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Import RINEX File"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#444466"
+                            android:layout_marginTop="8dp"/>
+                    </LinearLayout>
+
+                    <!-- PPK Processing Section -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#16213e"
+                        android:padding="12dp"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="PPK Processing"
+                            android:textColor="#00bcd4"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:layout_marginBottom="8dp"/>
+
+                        <TextView
+                            android:id="@+id/tvDetailPpkStatus"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Waiting for rover and base data..."
+                            android:textColor="#888888"
+                            android:textSize="14sp"/>
+
+                        <Button
+                            android:id="@+id/btnDetailProcessPpk"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Process PPK"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#4CAF50"
+                            android:enabled="false"
+                            android:layout_marginTop="12dp"/>
+                    </LinearLayout>
+
+                    <!-- Export Section -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:background="#16213e"
+                        android:padding="12dp"
+                        android:layout_marginBottom="12dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Export"
+                            android:textColor="#00bcd4"
+                            android:textSize="14sp"
+                            android:textStyle="bold"
+                            android:layout_marginBottom="8dp"/>
+
+                        <Button
+                            android:id="@+id/btnDetailExportZip"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Export All Files (ZIP)"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#00bcd4"/>
+                    </LinearLayout>
+
+                    <!-- Delete Project -->
+                    <Button
+                        android:id="@+id/btnDetailDeleteProject"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Delete Project"
+                        android:textColor="#ffffff"
+                        android:backgroundTint="#f44336"
+                        android:layout_marginTop="16dp"/>
+
+                </LinearLayout>
+            </ScrollView>
+
+        </ViewFlipper>
+
         <!-- Remote Tab Content -->
         <ScrollView
             android:layout_width="match_parent"
@@ -400,6 +841,48 @@ Radio Link: Connect via Shore Station LoRa relay"
                             android:textSize="14sp"/>
 
                     </LinearLayout>
+
+                </LinearLayout>
+
+                <!-- Shore Station NTRIP Toggle -->
+                <LinearLayout
+                    android:id="@+id/shoreNtripSection"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:background="#16213e"
+                    android:padding="16dp"
+                    android:layout_marginBottom="16dp"
+                    android:gravity="center_vertical">
+
+                    <LinearLayout
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:orientation="vertical">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Shore Station NTRIP"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:textStyle="bold"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="Use Shore Station's direct connection to base station (disable to use phone NTRIP only)"
+                            android:textColor="#888888"
+                            android:textSize="11sp"/>
+
+                    </LinearLayout>
+
+                    <androidx.appcompat.widget.SwitchCompat
+                        android:id="@+id/shoreNtripSwitch"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true"/>
 
                 </LinearLayout>
 

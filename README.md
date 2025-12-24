@@ -32,7 +32,7 @@ Remote monitoring and control:
 
 ## Features
 
-### Navigation Tab
+### Navigation Tab (New)
 - **2D Map View**: OSMdroid with OSM, Topo, and Esri Satellite imagery
 - **3D Point Cloud**: OpenGL ES 2.0 visualization with touch rotation/zoom
 - **Color-coded depth points**: Blue (shallow) to red (deep) gradient
@@ -72,75 +72,46 @@ Remote monitoring and control:
 Same hardware, different firmware - connects to WiFi for NTRIP.
 
 ### Deeper Chirp+2 Sonar
-- WiFi AP: `Deeper CHIRP+ XXXX`
+- WiFi AP: 
 - UDP Port: 10110
 - Update rate: ~14 Hz
-- Protocols: NMEA 0183 ($SDDBT, $YXMTW)
+- Protocols: NMEA 0183 (, )
 
 ## LoRa Configuration (MUST MATCH)
-```cpp
-#define LORA_FREQUENCY     915E6   // 915 MHz Americas
-#define LORA_BANDWIDTH     125E3   // 125 kHz
-#define LORA_SPREAD_FACTOR 7       // SF7 ONLY - SF9+ breaks M8P!
-#define LORA_CODING_RATE   5       // 4/5
-#define LORA_SYNC_WORD     0x12
-#define LORA_TX_POWER      20      // 20 dBm
-```
+
 
 ## Build Instructions
 
 ### B-Box Firmware
-```bash
-# Compile (requires huge_app partition for BLE)
-arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-  DeeperRTK_Receiver/DeeperRTK_Receiver.ino
 
-# Upload
-arduino-cli upload -p COM18 --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-  DeeperRTK_Receiver/DeeperRTK_Receiver.ino
-```
 
 ### Shore Station Firmware
-```bash
-arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-  ShoreStation/ShoreStation.ino
 
-arduino-cli upload -p COM19 --fqbn esp32:esp32:esp32:PartitionScheme=huge_app \
-  ShoreStation/ShoreStation.ino
-```
 
 ### Android App
-```bash
-cd android
-export JAVA_HOME="path/to/jdk-17"
-./gradlew assembleDebug
 
-# Install via ADB
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
+ERROR: JAVA_HOME is set to an invalid directory: path/to/jdk-17
 
 ## BLE Protocol
 
 ### Service UUIDs (Nordic UART)
-- Service: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`
-- TX (notify): `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
-- RX (write): `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
+- Service: 
+- TX (notify): 
+- RX (write): 
 
 ### Status Format (15 Hz)
-```
-FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL,LAT,LON
-```
-Example: `4,12,1.25,18.5,85,1,5.2,-3.1,54.325682,-126.660538`
+
+Example: 
 
 ### Commands
 | Command | Response | Action |
 |---------|----------|--------|
-| `START` | `OK:REC_ON` | Enable SD recording |
-| `STOP` | `OK:REC_OFF` | Disable SD recording |
-| `STATUS` | Status line | Request immediate status |
-| `FREQ_WIDE` | `OK:FREQ_WIDE` | Wide beam (90-115 kHz) |
-| `FREQ_MED` | `OK:FREQ_MED` | Medium beam (270-310 kHz) |
-| `FREQ_NARROW` | `OK:FREQ_NARROW` | Narrow beam (635-715 kHz) |
+|  |  | Enable SD recording |
+|  |  | Disable SD recording |
+|  | Status line | Request immediate status |
+|  |  | Wide beam (90-115 kHz) |
+|  |  | Medium beam (270-310 kHz) |
+|  |  | Narrow beam (635-715 kHz) |
 
 ### Fix Quality Values
 | Value | Meaning | Color |
@@ -153,7 +124,23 @@ Example: `4,12,1.25,18.5,85,1,5.2,-3.1,54.325682,-126.660538`
 
 ## Recent Changes (December 2024)
 
-### Android App
+### v1.2.0 - December 24, 2024
+#### Android App
+- **Project Management**: Added Project tab for organizing survey sessions
+- **Project-named files**: Files now named by project (e.g., `survey1.csv`, `survey1.ubx`) instead of numbered
+- **Download from B-Box**: Fixed file discovery to support both legacy and project naming
+- **File pairing**: Smart matching of CSV/UBX files by base name
+- **Dialog styling**: All dialog buttons now have solid backgrounds matching app theme
+- **Delete All Logs**: Now deletes all .csv and .ubx files regardless of naming convention
+
+#### B-Box Firmware
+- **Project naming support**: Files created with project names sent from app
+- **Case-insensitive file listing**: LIST_LOGS finds .csv/.ubx files regardless of case
+- **Improved file handling**: Increased filename buffer sizes, String-based filename creation
+- **Delete all fix**: DELETE_ALL now removes all .csv and .ubx files
+
+### v1.1.0 - December 2024
+#### Android App
 - Added Navigation tab with 2D/3D view toggle
 - Integrated OSMdroid for 2D map (OSM, Topo, Satellite layers)
 - Added color-coded depth points on 2D map
@@ -163,38 +150,23 @@ Example: `4,12,1.25,18.5,85,1,5.2,-3.1,54.325682,-126.660538`
 - Added offline map download capability
 - Zoom support up to level 24 (sub-meter scale)
 
-### B-Box Firmware
+#### B-Box Firmware
 - Added GPS validation in BLE and LoRa status output
 - Prevents transmission of invalid (0,0) coordinates
 - Requires 4+ satellites before reporting position
 
-### Shore Station
+#### Shore Station
 - New firmware for LoRa relay station
 - NTRIP client with configurable credentials
 - Status display on OLED
 
 ## File Structure
-```
-deeper/
-├── DeeperRTK_Receiver/     # B-Box firmware
-│   └── DeeperRTK_Receiver.ino
-├── ShoreStation/           # Shore relay firmware
-│   └── ShoreStation.ino
-├── android/                # Android app
-│   └── app/src/main/java/com/deeperrtk/remote/
-│       ├── MainActivity.kt
-│       ├── DepthPoint.kt
-│       ├── TrackManager.kt
-│       ├── PointCloudGLSurfaceView.kt
-│       └── PointCloudRenderer.kt
-├── CLAUDE.md               # Development notes
-└── README.md               # This file
-```
+
 
 ## Troubleshooting
 
 ### NTRIP Won't Connect
-- Ensure `usesCleartextTraffic="true"` in AndroidManifest.xml
+- Ensure  in AndroidManifest.xml
 - Check server address and port
 - Verify credentials and mountpoint
 
@@ -207,6 +179,11 @@ deeper/
 - Uses Esri World Imagery (requires internet)
 - Download offline tiles before going to field
 - Switch to OSM if satellite unavailable
+
+### 3D View Not Updating
+- Points are added via TrackManager
+- Renderer polls TrackManager automatically
+- Try clearing and restarting track
 
 ## License
 MIT License

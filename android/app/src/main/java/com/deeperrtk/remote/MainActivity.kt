@@ -32,6 +32,9 @@ import android.app.AlertDialog
 import android.os.Environment
 import java.io.File
 import java.io.FileOutputStream
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.app.Activity
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.tileprovider.tilesource.XYTileSource
@@ -49,7 +52,8 @@ import android.preference.PreferenceManager
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val DEVICE_NAME = "DeeperRTK"
+        private const val DEVICE_NAME = "BBOX"
+        private const val REQUEST_IMPORT_RINEX = 2001
         private const val SHORE_SERVICE_UUID_STR = "6E400001-B5A3-F393-E0A9-E50E24DCCA9F"
 
         // Nordic UART Service UUIDs - B-Box uses standard Nordic UART
@@ -216,6 +220,23 @@ class MainActivity : AppCompatActivity() {
     private var downloadFileName = ""
     private val downloadBuffer = StringBuilder()
 
+    // Project Tab UI
+    private lateinit var newProjectButton: Button
+    private lateinit var importRinexButton: Button
+    private lateinit var projectsListView: ListView
+    // Removed: currentProjectSection
+    // Removed: currentProjectName
+    // Removed: currentProjectStatus
+    // Removed: exportProjectButton
+    private lateinit var projectViewFlipper: ViewFlipper
+    private lateinit var projectsAdapter: ArrayAdapter<String>
+    private val projectDisplayList = mutableListOf<String>()
+
+    // Project Detail (persists across tab switches)
+    private var currentDetailProject: Project? = null
+
+
+
     // Navigation Tab UI
     private lateinit var navViewFlipper: ViewFlipper
     private lateinit var mapView: MapView
@@ -251,7 +272,7 @@ class MainActivity : AppCompatActivity() {
                 val hasOurService = serviceUuids?.any { it.uuid == SERVICE_UUID } == true
 
                 // Debug log: show ALL devices found during scan
-                android.util.Log.d("BLE_SCAN", "Found: '$deviceName' addr=${device.address} rssi=${result.rssi}")
+                android.util.Log.e("BLE_SCAN", "Found: '$deviceName' addr=${device.address} rssi=${result.rssi} hasService=$hasOurService")
 
                 // Device matching based on connection mode
                 // Check if device has Shore Station's specific UUID
@@ -562,7 +583,8 @@ class MainActivity : AppCompatActivity() {
         filterGSV.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_gsv", isChecked).apply() }
         filterOther.setOnCheckedChangeListener { _, isChecked -> prefs.edit().putBoolean("filter_other", isChecked).apply() }
 
-        // Set up tabs
+        // Set up tabs (Project tab is first)
+        tabLayout.addTab(tabLayout.newTab().setText("Proj"))
         tabLayout.addTab(tabLayout.newTab().setText("Remote"))
         tabLayout.addTab(tabLayout.newTab().setText("Config"))
         tabLayout.addTab(tabLayout.newTab().setText("Logs"))
@@ -593,11 +615,60 @@ class MainActivity : AppCompatActivity() {
             if (isConnected) disconnect() else checkPermissionsAndConnect()
         }
 
-        startButton.setOnClickListener { sendCommand("START") }
+        startButton.setOnClickListener {
+            val projectName = currentDetailProject?.name
+            if (projectName != null && projectName.isNotEmpty()) {
+                sendCommand("START:$projectName")
+            } else {
+                sendCommand("START")
+            }
+        }
         stopButton.setOnClickListener { sendCommand("STOP") }
 
         // Enable NMEA button - sends UDP command to Deeper sonar
         enableNmeaButton.setOnClickListener { sendNmeaEnableCommand() }
+
+        // Initialize ProjectManager
+        ProjectManager.init(this)
+
+        // Project tab bindings
+        projectViewFlipper = findViewById(R.id.projectViewFlipper)
+        newProjectButton = findViewById(R.id.newProjectButton)
+        importRinexButton = findViewById(R.id.importRinexButton)
+        projectsListView = findViewById(R.id.projectsListView)
+
+        // Setup projects list adapter
+        projectsAdapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, projectDisplayList)
+        projectsListView.adapter = projectsAdapter
+
+        newProjectButton.setOnClickListener { showNewProjectDialog() }
+        importRinexButton.setOnClickListener { importRinexFile() }
+
+        // Back button - returns to project list
+        findViewById<Button>(R.id.btnBackToList).setOnClickListener {
+            currentDetailProject = null
+            projectViewFlipper.displayedChild = 0
+        }
+
+        // Delete button
+        findViewById<Button>(R.id.btnDetailDeleteProject).setOnClickListener {
+            deleteCurrentProject()
+        }
+
+        // Download rover files button - uses existing BLE connection
+        findViewById<Button>(R.id.btnDetailDownloadRover).setOnClickListener {
+            downloadRoverFilesForProject()
+        }
+
+        projectsListView.setOnItemClickListener { _, _, position, _ ->
+            val projects = ProjectManager.getProjects()
+            if (position < projects.size) {
+                openProject(projects[position])
+            }
+        }
+
+        // Load initial project list
+        refreshProjectList()
 
         // Logs tab bindings
         logsStatus = findViewById(R.id.logsStatus)
@@ -1022,8 +1093,9 @@ class MainActivity : AppCompatActivity() {
     private fun startScan() {
         if (isScanning) return
         connectButton.isEnabled = false
-        connectionStatus.text = "Scanning for DeeperRTK..."
-        android.util.Log.d("BLE_SCAN", "=== Starting BLE scan, radioLinkMode=$isRadioLinkMode ===")
+        connectionStatus.text = "Scanning for B-Box..."
+        android.util.Log.e("BLE_SCAN", "=== Starting BLE scan, radioLinkMode=$isRadioLinkMode ===")
+        Toast.makeText(this, "Starting BLE scan...", Toast.LENGTH_SHORT).show()
 
         try {
             val scanSettings = ScanSettings.Builder()
@@ -1285,7 +1357,7 @@ class MainActivity : AppCompatActivity() {
         val slider = dialogView.findViewById<SeekBar>(R.id.deleteSlider)
         val cancelButton = dialogView.findViewById<Button>(R.id.keepFilesButton)
 
-        val dialog = AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this, R.style.AlertDialogTheme)
             .setView(dialogView)
             .setCancelable(true)
             .create()
@@ -1318,8 +1390,13 @@ class MainActivity : AppCompatActivity() {
     private fun handleLogsResponse(line: String) {
         when {
             line.startsWith("LOGS:") -> {
-                // Parse log list: LOGS:name1,size1,date1;name2,size2,date2;...
                 val logsData = line.substring(5)
+                // Check if this is for project download
+                if (projectDownloadMode) {
+                    handleProjectFileList(logsData)
+                    return
+                }
+                // Normal Logs tab handling
                 if (logsData.isEmpty() || logsData == "EMPTY") {
                     logsStatus.text = "No logs found"
                     return
@@ -1347,7 +1424,11 @@ class MainActivity : AppCompatActivity() {
                 downloadBuffer.append(line.substring(10))
             }
             line == "FILE_END" -> {
-                saveDownloadedFile()
+                if (projectDownloadMode) {
+                    saveProjectFile()
+                } else {
+                    saveDownloadedFile()
+                }
             }
             line == "OK:DELETE_ALL" -> {
                 logFiles.clear()
@@ -1395,6 +1476,10 @@ class MainActivity : AppCompatActivity() {
         if (::mapView.isInitialized) {
             mapView.onResume()
         }
+        // Refresh project list in case it changed (e.g., returning from detail screen)
+        if (::projectsAdapter.isInitialized) {
+            refreshProjectList()
+        }
     }
 
     override fun onPause() {
@@ -1408,6 +1493,413 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
         handler.removeCallbacks(pollRunnable)
         disconnect()
+    }
+
+    // ========== PROJECT MANAGEMENT ==========
+
+    private fun refreshProjectList() {
+        projectDisplayList.clear()
+        for (project in ProjectManager.getProjects()) {
+            val dateStr = java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+                .format(java.util.Date(project.createdAt))
+            projectDisplayList.add("${project.name} - ${project.getStatusText()} ($dateStr)")
+        }
+        projectsAdapter.notifyDataSetChanged()
+    }
+
+    private fun showNewProjectDialog() {
+        val input = EditText(this).apply {
+            hint = "Project name"
+            setPadding(48, 32, 48, 32)
+        }
+
+        AlertDialog.Builder(this, R.style.AlertDialogTheme)
+            .setTitle("New Project")
+            .setMessage("Enter a name for the new project:")
+            .setView(input)
+            .setPositiveButton("Create") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isNotEmpty()) {
+                    val project = ProjectManager.createProject(name)
+                    refreshProjectList()
+                    Toast.makeText(this, "Project created: $name", Toast.LENGTH_SHORT).show()
+                    // Open the new project in detail view
+                    openProject(project)
+                } else {
+                    Toast.makeText(this, "Please enter a project name", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openProject(project: Project) {
+        // Show project detail view (persists across tab switches)
+        currentDetailProject = project
+
+        // Update detail view content
+        findViewById<TextView>(R.id.tvDetailProjectName).text = project.name
+        findViewById<TextView>(R.id.tvDetailStatus).text = project.getStatusText()
+
+        val dateFormat = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.US)
+        findViewById<TextView>(R.id.tvDetailCreated).text = dateFormat.format(java.util.Date(project.createdAt))
+
+        // Update file status indicators
+        val ubxStatus = findViewById<TextView>(R.id.tvDetailUbxStatus)
+        val csvStatus = findViewById<TextView>(R.id.tvDetailCsvStatus)
+        val ubxIndicator = findViewById<View>(R.id.indicatorDetailUbx)
+        val csvIndicator = findViewById<View>(R.id.indicatorDetailCsv)
+
+        if (project.roverUbxFile != null) {
+            findViewById<TextView>(R.id.tvDetailUbxFile).text = project.roverUbxFile
+            ubxStatus.text = "Downloaded"
+            ubxStatus.setTextColor(0xFF4CAF50.toInt())
+            ubxIndicator.setBackgroundColor(0xFF4CAF50.toInt())
+        } else {
+            findViewById<TextView>(R.id.tvDetailUbxFile).text = "raw_XXXX.ubx (PPK data)"
+            ubxStatus.text = "Not downloaded"
+            ubxStatus.setTextColor(0xFF888888.toInt())
+            ubxIndicator.setBackgroundColor(0xFF888888.toInt())
+        }
+
+        if (project.roverCsvFile != null) {
+            findViewById<TextView>(R.id.tvDetailCsvFile).text = project.roverCsvFile
+            csvStatus.text = "Downloaded"
+            csvStatus.setTextColor(0xFF4CAF50.toInt())
+            csvIndicator.setBackgroundColor(0xFF4CAF50.toInt())
+        } else {
+            findViewById<TextView>(R.id.tvDetailCsvFile).text = "log_XXXX.csv (depth/IMU)"
+            csvStatus.text = "Not downloaded"
+            csvStatus.setTextColor(0xFF888888.toInt())
+            csvIndicator.setBackgroundColor(0xFF888888.toInt())
+        }
+
+        // Switch to detail view
+        projectViewFlipper.displayedChild = 1
+    }
+
+    private fun deleteCurrentProject() {
+        val project = currentDetailProject ?: return
+
+        AlertDialog.Builder(this, R.style.AlertDialogTheme)
+            .setTitle("Delete Project")
+            .setMessage("Delete '" + project.name + "'? This removes all project files.")
+            .setPositiveButton("Delete") { _, _ ->
+                ProjectManager.deleteProject(project.id)
+                currentDetailProject = null
+                projectViewFlipper.displayedChild = 0
+                refreshProjectList()
+                Toast.makeText(this, "Project deleted", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // Download rover files using existing BLE connection
+    private var projectDownloadMode = false
+    private var projectFilesToDownload = mutableListOf<String>()
+    private var projectTotalFiles = 0
+    private var projectCurrentFileIndex = 0
+    private var projectAvailableFiles = mutableListOf<Pair<String, Long>>()  // filename, size
+
+    private fun downloadRoverFilesForProject() {
+        val project = currentDetailProject
+        if (project == null) {
+            Toast.makeText(this, "No project selected", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!isConnected) {
+            Toast.makeText(this, "Connect to B-Box first (use Remote tab)", Toast.LENGTH_SHORT).show()
+            return
+        }
+        // Set project download mode and request file list
+        projectDownloadMode = true
+        projectFilesToDownload.clear()
+        Toast.makeText(this, "Requesting file list...", Toast.LENGTH_SHORT).show()
+        sendCommand("LIST_LOGS")
+    }
+
+    private fun handleProjectFileList(logsData: String) {
+        if (logsData.isEmpty() || logsData == "EMPTY") {
+            Toast.makeText(this, "No files on device", Toast.LENGTH_SHORT).show()
+            projectDownloadMode = false
+            hideDownloadProgress()
+            return
+        }
+
+        // Parse file list to find .csv and .ubx pairs with sizes
+        val entries = logsData.split(";")
+        projectAvailableFiles.clear()
+        val csvFiles = mutableListOf<Pair<String, Long>>()
+        val ubxFiles = mutableListOf<Pair<String, Long>>()
+
+        for (entry in entries) {
+            val parts = entry.split(",")
+            if (parts.size >= 2) {
+                val name = parts[0]
+                val size = parts[1].toLongOrNull() ?: 0L
+                if (name.endsWith(".csv")) csvFiles.add(Pair(name, size))
+                if (name.endsWith(".ubx")) ubxFiles.add(Pair(name, size))
+            }
+        }
+
+        if (csvFiles.isEmpty() && ubxFiles.isEmpty()) {
+            Toast.makeText(this, "No log files found", Toast.LENGTH_SHORT).show()
+            projectDownloadMode = false
+            hideDownloadProgress()
+            return
+        }
+
+        // Build list of file pairs (csv + matching ubx)
+        // Supports both legacy (log_0001.csv/raw_0001.ubx) and project naming (name.csv/name.ubx)
+        val filePairs = mutableListOf<Triple<String, String?, Long>>()  // csv, ubx or null, total size
+        for ((csv, csvSize) in csvFiles) {
+            // Get base name without extension and optional log_ prefix
+            var baseName = csv.substringBeforeLast(".")
+            if (baseName.startsWith("log_")) baseName = baseName.removePrefix("log_")
+
+            // Look for matching UBX with same base name (either raw_X.ubx or X.ubx)
+            val matchingUbx = ubxFiles.find {
+                val ubxBase = it.first.substringBeforeLast(".")
+                ubxBase == baseName || ubxBase == "raw_$baseName" || ubxBase.removePrefix("raw_") == baseName
+            }
+            val totalSize = csvSize + (matchingUbx?.second ?: 0L)
+            filePairs.add(Triple(csv, matchingUbx?.first, totalSize))
+        }
+
+        if (filePairs.isEmpty()) {
+            Toast.makeText(this, "No matching file pairs found", Toast.LENGTH_SHORT).show()
+            projectDownloadMode = false
+            hideDownloadProgress()
+            return
+        }
+
+        // Show file selection dialog
+        showFileSelectionDialog(filePairs, ubxFiles)
+    }
+
+    private fun showFileSelectionDialog(filePairs: List<Triple<String, String?, Long>>, ubxFiles: List<Pair<String, Long>>) {
+        val project = currentDetailProject ?: return
+
+        // Build display list
+        val displayItems = filePairs.map { (csv, ubx, size) ->
+            val sizeStr = formatFileSize(size)
+            if (ubx != null) {
+                "$csv + $ubx ($sizeStr)"
+            } else {
+                "$csv ($sizeStr)"
+            }
+        }.toTypedArray()
+
+        val checkedItems = BooleanArray(displayItems.size) { true }  // All selected by default
+
+        AlertDialog.Builder(this, R.style.AlertDialogTheme)
+            .setTitle("Select Files to Download")
+            .setMultiChoiceItems(displayItems, checkedItems) { _, which, isChecked ->
+                checkedItems[which] = isChecked
+            }
+            .setPositiveButton("Download") { _, _ ->
+                projectFilesToDownload.clear()
+                for (i in filePairs.indices) {
+                    if (checkedItems[i]) {
+                        val (csv, ubx, _) = filePairs[i]
+                        projectFilesToDownload.add(csv)
+                        if (ubx != null) {
+                            projectFilesToDownload.add(ubx)
+                        }
+                    }
+                }
+
+                if (projectFilesToDownload.isEmpty()) {
+                    Toast.makeText(this, "No files selected", Toast.LENGTH_SHORT).show()
+                    projectDownloadMode = false
+                    return@setPositiveButton
+                }
+
+                projectTotalFiles = projectFilesToDownload.size
+                projectCurrentFileIndex = 0
+                showDownloadProgress()
+                updateDownloadProgress()
+                downloadNextProjectFile()
+            }
+            .setNegativeButton("Cancel") { _, _ ->
+                projectDownloadMode = false
+            }
+            .show()
+    }
+
+    private fun showDownloadProgress() {
+        findViewById<View>(R.id.layoutDetailRoverProgress)?.visibility = View.VISIBLE
+        findViewById<Button>(R.id.btnDetailDownloadRover)?.isEnabled = false
+    }
+
+    private fun hideDownloadProgress() {
+        findViewById<View>(R.id.layoutDetailRoverProgress)?.visibility = View.GONE
+        findViewById<Button>(R.id.btnDetailDownloadRover)?.isEnabled = true
+    }
+
+    private fun updateDownloadProgress() {
+        val progress = if (projectTotalFiles > 0) {
+            (projectCurrentFileIndex * 100) / projectTotalFiles
+        } else 0
+
+        findViewById<android.widget.ProgressBar>(R.id.progressDetailRover)?.progress = progress
+
+        val statusText = if (projectCurrentFileIndex < projectTotalFiles) {
+            "Downloading file ${projectCurrentFileIndex + 1} of $projectTotalFiles..."
+        } else {
+            "Complete!"
+        }
+        findViewById<TextView>(R.id.tvDetailRoverProgress)?.text = statusText
+    }
+
+    private fun downloadNextProjectFile() {
+        if (projectFilesToDownload.isEmpty()) {
+            projectDownloadMode = false
+            projectCurrentFileIndex = projectTotalFiles
+            updateDownloadProgress()
+            hideDownloadProgress()
+            Toast.makeText(this, "Download complete!", Toast.LENGTH_SHORT).show()
+            // Refresh project detail view
+            currentDetailProject?.let { openProject(it) }
+            return
+        }
+
+        val filename = projectFilesToDownload.removeAt(0)
+        downloadFileName = filename
+        downloadBuffer.clear()
+        updateDownloadProgress()
+        sendCommand("DOWNLOAD:$filename")
+    }
+
+    private fun saveProjectFile() {
+        val project = currentDetailProject ?: return
+        try {
+            val projectDir = ProjectManager.getRoverDir(project.id).parentFile!!
+            val roverDir = java.io.File(projectDir, "rover")
+            if (!roverDir.exists()) roverDir.mkdirs()
+
+            // Rename file to match project name
+            val newFileName = if (downloadFileName.endsWith(".csv")) {
+                "${project.name}.csv"
+            } else if (downloadFileName.endsWith(".ubx")) {
+                "${project.name}.ubx"
+            } else {
+                downloadFileName
+            }
+
+            val file = java.io.File(roverDir, newFileName)
+            java.io.FileOutputStream(file).use { fos ->
+                fos.write(downloadBuffer.toString().toByteArray())
+            }
+
+            // Update project with renamed file reference
+            if (newFileName.endsWith(".csv")) {
+                project.roverCsvFile = newFileName
+            } else if (newFileName.endsWith(".ubx")) {
+                project.roverUbxFile = newFileName
+            }
+            ProjectManager.updateProject(project)
+
+            // Increment progress and download next file
+            projectCurrentFileIndex++
+            downloadNextProjectFile()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Save failed: ${e.message}", Toast.LENGTH_SHORT).show()
+            projectDownloadMode = false
+            hideDownloadProgress()
+        }
+    }
+
+    private fun importRinexFile() {
+        val current = ProjectManager.getCurrentProject()
+        if (current == null) {
+            Toast.makeText(this, "Create or open a project first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf(
+                "application/octet-stream",
+                "text/plain"
+            ))
+        }
+        startActivityForResult(intent, REQUEST_IMPORT_RINEX)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_IMPORT_RINEX && resultCode == Activity.RESULT_OK) {
+            data?.data?.let { uri ->
+                importRinexFromUri(uri)
+            }
+        }
+    }
+
+    private fun importRinexFromUri(uri: Uri) {
+        val current = ProjectManager.getCurrentProject() ?: return
+
+        thread {
+            try {
+                val filename = getFileName(uri) ?: "base.obs"
+                val inputStream = contentResolver.openInputStream(uri)
+                val bytes = inputStream?.readBytes() ?: return@thread
+                inputStream.close()
+
+                ProjectManager.saveBaseRinexFile(current.id, filename, bytes)
+
+                handler.post {
+                    refreshProjectList()
+                    Toast.makeText(this, "Imported: $filename", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                handler.post {
+                    Toast.makeText(this, "Import failed: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun getFileName(uri: Uri): String? {
+        var result: String? = null
+        if (uri.scheme == "content") {
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val idx = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) result = it.getString(idx)
+                }
+            }
+        }
+        if (result == null) {
+            result = uri.path
+            val cut = result?.lastIndexOf('/')
+            if (cut != null && cut != -1) {
+                result = result?.substring(cut + 1)
+            }
+        }
+        return result
+    }
+
+    private fun exportCurrentProject() {
+        val current = ProjectManager.getCurrentProject()
+        if (current == null) {
+            Toast.makeText(this, "No project open", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        thread {
+            val zipFile = ProjectManager.exportProjectZip(current.id)
+            handler.post {
+                if (zipFile != null) {
+                    Toast.makeText(this, "Exported to: ${zipFile.name}", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Export failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
     }
 
     // ========== NTRIP CLIENT ==========

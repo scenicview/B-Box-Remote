@@ -8,5 +8,30 @@
         <item name="colorSecondaryVariant">#0097a7</item>
         <item name="colorOnSecondary">#000000</item>
         <item name="android:statusBarColor">#1a1a2e</item>
+
+        <!-- Dialog button colors -->
+        <item name="buttonBarPositiveButtonStyle">@style/DialogButtonPositive</item>
+        <item name="buttonBarNegativeButtonStyle">@style/DialogButtonNegative</item>
+        <item name="alertDialogTheme">@style/AlertDialogTheme</item>
+    </style>
+
+    <!-- Dialog positive button - Cyan background like other buttons -->
+    <style name="DialogButtonPositive" parent="Widget.MaterialComponents.Button">
+        <item name="android:textColor">#ffffff</item>
+        <item name="backgroundTint">#00bcd4</item>
+    </style>
+
+    <!-- Dialog negative button - Gray background -->
+    <style name="DialogButtonNegative" parent="Widget.MaterialComponents.Button">
+        <item name="android:textColor">#ffffff</item>
+        <item name="backgroundTint">#444466</item>
+    </style>
+
+    <!-- Alert Dialog theme - Dark background with white text -->
+    <style name="AlertDialogTheme" parent="ThemeOverlay.MaterialComponents.Dialog.Alert">
+        <item name="android:background">#16213e</item>
+        <item name="colorPrimary">#00bcd4</item>
+        <item name="colorOnSurface">#ffffff</item>
+        <item name="android:textColorPrimary">#ffffff</item>
     </style>
 </resources>
