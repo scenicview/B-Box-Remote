@@ -54,6 +54,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val DEVICE_NAME = "BBOX"
         private const val REQUEST_IMPORT_RINEX = 2001
+        private const val REQUEST_IMPORT_SOLUTION = 2003
         private const val SHORE_SERVICE_UUID_STR = "6E400001-B5A3-F393-E0A9-E50E24DCCA9F"
 
         // Nordic UART Service UUIDs - B-Box uses standard Nordic UART
@@ -222,7 +223,6 @@ class MainActivity : AppCompatActivity() {
 
     // Project Tab UI
     private lateinit var newProjectButton: Button
-    private lateinit var importRinexButton: Button
     private lateinit var projectsListView: ListView
     // Removed: currentProjectSection
     // Removed: currentProjectName
@@ -234,7 +234,7 @@ class MainActivity : AppCompatActivity() {
 
     // Project Detail (persists across tab switches)
     private var currentDetailProject: Project? = null
-
+    private var mergedPpkRecords: List<MergedRecord> = emptyList()
 
 
     // Navigation Tab UI
@@ -634,7 +634,6 @@ class MainActivity : AppCompatActivity() {
         // Project tab bindings
         projectViewFlipper = findViewById(R.id.projectViewFlipper)
         newProjectButton = findViewById(R.id.newProjectButton)
-        importRinexButton = findViewById(R.id.importRinexButton)
         projectsListView = findViewById(R.id.projectsListView)
 
         // Setup projects list adapter
@@ -642,7 +641,6 @@ class MainActivity : AppCompatActivity() {
         projectsListView.adapter = projectsAdapter
 
         newProjectButton.setOnClickListener { showNewProjectDialog() }
-        importRinexButton.setOnClickListener { importRinexFile() }
 
         // Back button - returns to project list
         findViewById<Button>(R.id.btnBackToList).setOnClickListener {
@@ -658,6 +656,31 @@ class MainActivity : AppCompatActivity() {
         // Download rover files button - uses existing BLE connection
         findViewById<Button>(R.id.btnDetailDownloadRover).setOnClickListener {
             downloadRoverFilesForProject()
+        }
+
+        // Import RINEX file button
+        findViewById<Button>(R.id.btnDetailImportRinex).setOnClickListener {
+            importRinexFile()
+        }
+
+        // Export for Desktop PPK button
+        findViewById<Button>(R.id.btnDetailProcessPpk).setOnClickListener {
+            exportPpkData()
+        }
+
+        // Import Solution (.pos) button
+        findViewById<Button>(R.id.btnDetailImportSolution).setOnClickListener {
+            importSolutionFile()
+        }
+
+        // Export Corrected CSV button
+        findViewById<Button>(R.id.btnDetailExportMerged).setOnClickListener {
+            exportMergedCsv()
+        }
+
+        // On-device PPK processing button
+        findViewById<Button>(R.id.btnDetailRunPpk).setOnClickListener {
+            runOnDevicePpk()
         }
 
         projectsListView.setOnItemClickListener { _, _, position, _ ->
@@ -1574,9 +1597,360 @@ class MainActivity : AppCompatActivity() {
             csvIndicator.setBackgroundColor(0xFF888888.toInt())
         }
 
+        // Update base section
+        updateBaseIndicator(project)
+
         // Switch to detail view
         projectViewFlipper.displayedChild = 1
     }
+
+    private fun updateBaseIndicator(project: Project) {
+        val rtcmIndicator = findViewById<View>(R.id.indicatorDetailRtcm)
+        val rtcmFile = findViewById<TextView>(R.id.tvDetailRtcmFile)
+        val ppkButton = findViewById<Button>(R.id.btnDetailProcessPpk)
+        val ppkStatus = findViewById<TextView>(R.id.tvDetailPpkStatus)
+
+        val baseFile = project.baseRinexFile ?: project.baseRtcmFile
+        if (baseFile != null) {
+            rtcmFile.text = baseFile
+            rtcmIndicator.setBackgroundColor(0xFF4CAF50.toInt())
+        } else {
+            rtcmFile.text = "No base file"
+            rtcmIndicator.setBackgroundColor(0xFF888888.toInt())
+        }
+
+        // Update PPK button state
+        val hasRover = project.roverUbxFile != null && project.roverCsvFile != null
+        val hasBase = baseFile != null
+
+        val importSolutionBtn = findViewById<Button>(R.id.btnDetailImportSolution)
+        val runPpkBtn = findViewById<Button>(R.id.btnDetailRunPpk)
+
+        // Check if RTKLIB binaries are available
+        when {
+            hasRover && hasBase -> {
+                ppkButton.isEnabled = true
+                importSolutionBtn.isEnabled = true
+                runPpkBtn.visibility = android.view.View.VISIBLE
+                runPpkBtn.isEnabled = true
+                ppkStatus.text = "Ready to process"
+                ppkStatus.setTextColor(0xFF4CAF50.toInt())
+            }
+            hasRover && !hasBase -> {
+                ppkButton.isEnabled = false
+                importSolutionBtn.isEnabled = false
+                runPpkBtn.visibility = android.view.View.GONE
+                ppkStatus.text = "Waiting for base station data..."
+                ppkStatus.setTextColor(0xFFFFEB3B.toInt())
+            }
+            else -> {
+                ppkButton.isEnabled = false
+                importSolutionBtn.isEnabled = false
+                runPpkBtn.visibility = android.view.View.GONE
+                ppkStatus.text = "Waiting for rover and base data..."
+                ppkStatus.setTextColor(0xFF888888.toInt())
+            }
+        }
+    }
+
+    private fun exportPpkData() {
+        val project = currentDetailProject
+        if (project == null) {
+            Toast.makeText(this, "No project selected", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Check we have all required files
+        if (project.roverUbxFile == null || project.roverCsvFile == null) {
+            Toast.makeText(this, "Missing rover files (UBX and CSV required)", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val baseFile = project.baseRinexFile ?: project.baseRtcmFile
+        if (baseFile == null) {
+            Toast.makeText(this, "Missing base station file (RINEX required)", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        // Get file paths
+        val roverDir = ProjectManager.getRoverDir(project.id)
+        val baseDir = ProjectManager.getBaseDir(project.id)
+        val ppkDir = ProjectManager.getPpkDir(project.id)
+        if (!ppkDir.exists()) ppkDir.mkdirs()
+
+        val ubxFile = java.io.File(roverDir, project.roverUbxFile!!)
+        val csvFile = java.io.File(roverDir, project.roverCsvFile!!)
+        val rinexFile = java.io.File(baseDir, baseFile)
+
+        // Show file info
+        val info = StringBuilder()
+        info.append("Rover UBX: ${ubxFile.name} (${ubxFile.length() / 1024} KB)\n")
+        info.append("Rover CSV: ${csvFile.name} (${csvFile.length() / 1024} KB)\n")
+        info.append("Base RINEX: ${rinexFile.name} (${rinexFile.length() / 1024} KB)\n\n")
+        info.append("PPK processing requires RTKLIB.\n")
+        info.append("Export ZIP and process on desktop with SonarGPSSync.")
+
+        AlertDialog.Builder(this, R.style.AlertDialogTheme)
+            .setTitle("Export PPK Data")
+            .setMessage(info.toString())
+            .setPositiveButton("Export ZIP") { _, _ ->
+                exportProjectZip()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun exportProjectZip() {
+        val project = currentDetailProject ?: return
+
+        Toast.makeText(this, "Exporting project...", Toast.LENGTH_SHORT).show()
+
+        thread {
+            val zipFile = ProjectManager.exportProjectZip(project.id)
+            handler.post {
+                if (zipFile != null) {
+                    Toast.makeText(this, "Exported: ${zipFile.name}", Toast.LENGTH_LONG).show()
+                } else {
+                    Toast.makeText(this, "Export failed", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun importSolutionFile() {
+        val project = currentDetailProject
+        if (project == null) {
+            Toast.makeText(this, "Open a project first", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
+        startActivityForResult(intent, REQUEST_IMPORT_SOLUTION)
+    }
+
+    private fun processSolutionFile(uri: Uri) {
+        val project = currentDetailProject ?: return
+
+        Toast.makeText(this, "Processing solution...", Toast.LENGTH_SHORT).show()
+
+        thread {
+            try {
+                // Copy .pos file to project
+                val filename = getFileName(uri) ?: "solution.pos"
+                val inputStream = contentResolver.openInputStream(uri)
+                val posBytes = inputStream?.readBytes() ?: throw Exception("Failed to read file")
+                inputStream.close()
+
+                val ppkDir = ProjectManager.getPpkDir(project.id)
+                if (!ppkDir.exists()) ppkDir.mkdirs()
+
+                val posFile = java.io.File(ppkDir, filename)
+                posFile.writeBytes(posBytes)
+
+                // Parse the solution file
+                val processor = PPKProcessor(this) { msg ->
+                    android.util.Log.d("PPK", msg)
+                }
+
+                val solutions = processor.parsePosFile(posFile)
+                if (solutions.isEmpty()) {
+                    handler.post {
+                        Toast.makeText(this, "No valid solutions in file", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
+
+                // Parse rover CSV
+                val roverDir = ProjectManager.getRoverDir(project.id)
+                val csvFile = java.io.File(roverDir, project.roverCsvFile ?: "")
+                if (!csvFile.exists()) {
+                    handler.post {
+                        Toast.makeText(this, "Rover CSV not found", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
+
+                val roverRecords = processor.parseRoverCsv(csvFile)
+                if (roverRecords.isEmpty()) {
+                    handler.post {
+                        Toast.makeText(this, "No valid records in rover CSV", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
+
+                // Merge and apply IMU correction
+                mergedPpkRecords = processor.merge(solutions, roverRecords)
+
+                if (mergedPpkRecords.isEmpty()) {
+                    handler.post {
+                        Toast.makeText(this, "No overlapping data to merge", Toast.LENGTH_LONG).show()
+                    }
+                    return@thread
+                }
+
+                // Calculate statistics
+                val fixedCount = mergedPpkRecords.count { it.fixQuality == 1 }
+                val floatCount = mergedPpkRecords.count { it.fixQuality == 2 }
+                val singleCount = mergedPpkRecords.count { it.fixQuality >= 5 }
+                val total = mergedPpkRecords.size
+
+                val fixedPct = if (total > 0) fixedCount * 100 / total else 0
+                val floatPct = if (total > 0) floatCount * 100 / total else 0
+                val singlePct = if (total > 0) singleCount * 100 / total else 0
+
+                handler.post {
+                    // Show results
+                    findViewById<android.widget.LinearLayout>(R.id.layoutDetailPpkResults).visibility = android.view.View.VISIBLE
+                    findViewById<TextView>(R.id.tvDetailPpkResults).text =
+                        "Fixed: $fixedPct% | Float: $floatPct% | Single: $singlePct%\nTotal: $total points"
+
+                    Toast.makeText(this, "Merged ${mergedPpkRecords.size} points with IMU correction", Toast.LENGTH_LONG).show()
+                }
+
+            } catch (e: Exception) {
+                handler.post {
+                    Toast.makeText(this, "Processing error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    private fun exportMergedCsv() {
+        if (mergedPpkRecords.isEmpty()) {
+            Toast.makeText(this, "No merged data to export", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val project = currentDetailProject ?: return
+
+        thread {
+            try {
+                val ppkDir = ProjectManager.getPpkDir(project.id)
+                val outputFile = java.io.File(ppkDir, "${project.name}_corrected.csv")
+
+                val processor = PPKProcessor(this) { }
+                val success = processor.exportToCsv(mergedPpkRecords, outputFile)
+
+                handler.post {
+                    if (success) {
+                        Toast.makeText(this, "Exported: ${outputFile.name}", Toast.LENGTH_LONG).show()
+                    } else {
+                        Toast.makeText(this, "Export failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                handler.post {
+                    Toast.makeText(this, "Export error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun runOnDevicePpk() {
+        val project = currentDetailProject
+        if (project == null) {
+            Toast.makeText(this, "No project selected", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        // Check required files
+        if (project.roverUbxFile == null || project.roverCsvFile == null) {
+            Toast.makeText(this, "Missing rover files", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val baseFile = project.baseRinexFile ?: project.baseRtcmFile
+        if (baseFile == null) {
+            Toast.makeText(this, "Missing base station file", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        // Show progress
+        val ppkStatus = findViewById<TextView>(R.id.tvDetailPpkStatus)
+        val runPpkBtn = findViewById<Button>(R.id.btnDetailRunPpk)
+        runPpkBtn.isEnabled = false
+        ppkStatus.text = "Processing PPK..."
+        ppkStatus.setTextColor(0xFFFFEB3B.toInt())
+
+        Toast.makeText(this, "Starting PPK processing...", Toast.LENGTH_SHORT).show()
+
+        thread {
+            try {
+                val roverDir = ProjectManager.getRoverDir(project.id)
+                val baseDir = ProjectManager.getBaseDir(project.id)
+                val ppkDir = ProjectManager.getPpkDir(project.id)
+                if (!ppkDir.exists()) ppkDir.mkdirs()
+
+                val ubxFile = java.io.File(roverDir, project.roverUbxFile!!)
+                val csvFile = java.io.File(roverDir, project.roverCsvFile!!)
+                val rinexFile = java.io.File(baseDir, baseFile)
+
+                val logMessages = mutableListOf<String>()
+                val processor = PPKProcessor(this) { msg ->
+                    logMessages.add(msg)
+                    android.util.Log.d("PPK", msg)
+                }
+
+                // Run full PPK pipeline
+                mergedPpkRecords = processor.processFullPpk(ubxFile, rinexFile, csvFile, ppkDir)
+
+                handler.post {
+                    runPpkBtn.isEnabled = true
+
+                    if (mergedPpkRecords.isNotEmpty()) {
+                        // Calculate statistics
+                        val fixedCount = mergedPpkRecords.count { it.fixQuality == 1 }
+                        val floatCount = mergedPpkRecords.count { it.fixQuality == 2 }
+                        val singleCount = mergedPpkRecords.count { it.fixQuality >= 5 }
+                        val total = mergedPpkRecords.size
+
+                        val fixedPct = if (total > 0) fixedCount * 100 / total else 0
+                        val floatPct = if (total > 0) floatCount * 100 / total else 0
+                        val singlePct = if (total > 0) singleCount * 100 / total else 0
+
+                        // Show results
+                        findViewById<android.widget.LinearLayout>(R.id.layoutDetailPpkResults).visibility = android.view.View.VISIBLE
+                        findViewById<TextView>(R.id.tvDetailPpkResults).text =
+                            "Fixed: $fixedPct% | Float: $floatPct% | Single: $singlePct%\nTotal: $total points"
+
+                        ppkStatus.text = "PPK complete!"
+                        ppkStatus.setTextColor(0xFF4CAF50.toInt())
+
+                        Toast.makeText(this, "PPK complete: ${mergedPpkRecords.size} points", Toast.LENGTH_LONG).show()
+                    } else {
+                        ppkStatus.text = "PPK failed"
+                        ppkStatus.setTextColor(0xFFf44336.toInt())
+
+                        // Show error log
+                        val errorMsg = logMessages.takeLast(3).joinToString("\n")
+                        AlertDialog.Builder(this, R.style.AlertDialogTheme)
+                            .setTitle("PPK Processing Failed")
+                            .setMessage(errorMsg)
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                }
+            } catch (e: Exception) {
+                handler.post {
+                    runPpkBtn.isEnabled = true
+                    ppkStatus.text = "PPK error"
+                    ppkStatus.setTextColor(0xFFf44336.toInt())
+                    Toast.makeText(this, "PPK error: ${e.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
+    
+
+    
+
+    
+
+    
 
     private fun deleteCurrentProject() {
         val project = currentDetailProject ?: return
@@ -1812,9 +2186,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun importRinexFile() {
-        val current = ProjectManager.getCurrentProject()
+        val current = currentDetailProject
         if (current == null) {
-            Toast.makeText(this, "Create or open a project first", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Open a project first", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -1836,10 +2210,15 @@ class MainActivity : AppCompatActivity() {
                 importRinexFromUri(uri)
             }
         }
+        if (requestCode == REQUEST_IMPORT_SOLUTION && resultCode == Activity.RESULT_OK) {
+            data?.data?.let { uri ->
+                processSolutionFile(uri)
+            }
+        }
     }
 
     private fun importRinexFromUri(uri: Uri) {
-        val current = ProjectManager.getCurrentProject() ?: return
+        val current = currentDetailProject ?: return
 
         thread {
             try {
@@ -1852,6 +2231,7 @@ class MainActivity : AppCompatActivity() {
 
                 handler.post {
                     refreshProjectList()
+                    currentDetailProject?.let { updateBaseIndicator(it) }
                     Toast.makeText(this, "Imported: $filename", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
@@ -2147,17 +2527,14 @@ class MainActivity : AppCompatActivity() {
 
         synchronized(bleLock) {
             try {
-                android.util.Log.d("NTRIP", "Sending ${rtcmData.size} bytes RTCM via BLE")
-                // BLE MTU limits chunk size - send in 200-byte chunks with "RTCM:" prefix
+                android.util.Log.d("NTRIP", "Sending ${rtcmData.size} bytes raw RTCM via BLE")
+                // Send raw RTCM data (0xD3 preamble) - M8P expects unmodified RTCM3
+                // BLE MTU limits chunk size - send in 200-byte chunks
                 val maxChunk = 200
                 var offset = 0
                 while (offset < rtcmData.size) {
                     val chunkLen = minOf(maxChunk, rtcmData.size - offset)
                     val chunk = rtcmData.copyOfRange(offset, offset + chunkLen)
-
-                    val cmd = ByteArray(5 + chunkLen)
-                    "RTCM:".toByteArray().copyInto(cmd, 0)
-                    chunk.copyInto(cmd, 5)
 
                     // Wait for minimum interval between writes to prevent BLE congestion
                     val now = System.currentTimeMillis()
@@ -2166,7 +2543,8 @@ class MainActivity : AppCompatActivity() {
                         Thread.sleep(BLE_WRITE_INTERVAL_MS - elapsed)
                     }
 
-                    rxCharacteristic!!.value = cmd
+                    // Send raw RTCM chunk (no prefix - starts with 0xD3)
+                    rxCharacteristic!!.value = chunk
                     bluetoothGatt!!.writeCharacteristic(rxCharacteristic)
                     lastBleWriteTime = System.currentTimeMillis()
                     rtcmBytesSent += chunkLen

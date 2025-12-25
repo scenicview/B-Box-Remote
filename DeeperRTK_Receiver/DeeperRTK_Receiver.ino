@@ -103,6 +103,7 @@ bool imuFilterInitialized = false;
 
 // Here+ GPS UART (Serial1)
 #define GPS_RX_PIN   33   // TTGO RX <- M8P TX - NMEA out
+#define GPS_TX_PIN   25   // TTGO TX -> M8P RX - for config commands
 #define GPS_BAUD     115200  // High speed for 10Hz PPK
 
 // ========== LORA CONFIGURATION (MUST MATCH TRANSMITTER) ==========
@@ -141,6 +142,7 @@ uint32_t lastLoraRx = 0;            // Last LoRa packet receive time (for yield 
 #define UBX_ID_SFRBX    0x13        // Navigation subframes
 #define UBX_CLASS_NAV   0x01
 #define UBX_ID_PVT      0x07        // Position, velocity, time solution
+#define UBX_ID_RTCM     0x32        // RTCM input status
 #define UBX_BUFFER_SIZE 1200        // Max size for 32 satellites
 
 // UBX parser states
@@ -160,6 +162,144 @@ enum UBXState {
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 HardwareSerial GPSSerial(1);
 WiFiUDP udp;
+
+// ========== M8P CONFIGURATION FOR PPK + RTK ==========
+// RTCM reception tracking (from UBX-RXM-RTCM)
+uint32_t rtcmMsgReceived = 0;       // Count of RTCM messages received
+uint32_t rtcmLastReceived = 0;      // Last RTCM reception time
+bool rtcmCrcFailed = false;         // Last RTCM CRC status
+uint16_t rtcmLastMsgType = 0;       // Last RTCM message type
+uint16_t rtcmLastRefStation = 0;    // Last reference station ID
+
+// RTCM via BLE tracking
+uint32_t rtcmBleReceived = 0;       // Count of RTCM bytes received via BLE
+uint32_t rtcmBleForwarded = 0;      // Count of RTCM bytes forwarded to GPS
+uint32_t lastRtcmBleDebug = 0;      // Last debug print time
+
+void configureM8P() {
+  Serial.println("[GPS] Configuring M8P for PPK + RTK...");
+  delay(100);
+
+  // ========== RTCM INPUT CONFIGURATION ==========
+
+  // UBX-CFG-PRT: Configure UART1 for RTCM3 input
+  // inProtoMask = UBX(0x01) + RTCM3(0x20) = 0x21
+  // outProtoMask = UBX(0x01) + NMEA(0x02) = 0x03
+  // Baud = 115200, Mode = 8N1
+  uint8_t cfgPrtUart1[] = {
+    0xB5, 0x62, 0x06, 0x00, 0x14, 0x00,
+    0x01,                   // portID = UART1
+    0x00,                   // reserved0
+    0x00, 0x00,             // txReady (disabled)
+    0xD0, 0x08, 0x00, 0x00, // mode = 8N1
+    0x00, 0xC2, 0x01, 0x00, // baudRate = 115200
+    0x21, 0x00,             // inProtoMask = UBX + RTCM3
+    0x03, 0x00,             // outProtoMask = UBX + NMEA
+    0x00, 0x00,             // flags
+    0x00, 0x00,             // reserved1
+    0xDA, 0x4E              // checksum
+  };
+  GPSSerial.write(cfgPrtUart1, sizeof(cfgPrtUart1));
+  delay(100);  // Longer delay after port config
+  Serial.println("[GPS] UART1 configured for RTCM3 input");
+
+  // UBX-CFG-TMODE3: Set mode=0 (Disabled) for rover operation
+  // This ensures the M8P acts as a rover, not a base station
+  uint8_t cfgTmode3[] = {
+    0xB5, 0x62, 0x06, 0x71, 0x28, 0x00,
+    0x00,                   // version
+    0x00,                   // reserved0
+    0x00, 0x00,             // flags (mode = 0 = Disabled = Rover)
+    0x00, 0x00, 0x00, 0x00, // ecefXOrLat
+    0x00, 0x00, 0x00, 0x00, // ecefYOrLon
+    0x00, 0x00, 0x00, 0x00, // ecefZOrAlt
+    0x00, 0x00, 0x00, 0x00, // ecefXOrLatHP
+    0x00, 0x00, 0x00, 0x00, // ecefYOrLonHP
+    0x00, 0x00, 0x00, 0x00, // ecefZOrAltHP
+    0x00, 0x00, 0x00, 0x00, // fixedPosAcc
+    0x00, 0x00, 0x00, 0x00, // svinMinDur
+    0x00, 0x00, 0x00, 0x00, // svinAccLimit
+    0x00, 0x00, 0x00, 0x00, // reserved1
+    0x9F, 0x93              // checksum
+  };
+  GPSSerial.write(cfgTmode3, sizeof(cfgTmode3));
+  delay(50);
+  Serial.println("[GPS] TMODE3 set to Rover mode");
+
+  // UBX-CFG-DGNSS: RTK mode = 3 (float + fixed)
+  uint8_t cfgDgnss[] = {
+    0xB5, 0x62, 0x06, 0x70, 0x04, 0x00,
+    0x03,                   // dgnssMode = RTK float + fixed
+    0x00, 0x00, 0x00,       // reserved
+    0x7D, 0x64              // checksum
+  };
+  GPSSerial.write(cfgDgnss, sizeof(cfgDgnss));
+  delay(50);
+  Serial.println("[GPS] DGNSS mode set to RTK float+fixed");
+
+  // ========== PPK OUTPUT CONFIGURATION ==========
+
+  // UBX-CFG-MSG: Enable UBX-RXM-RAWX on UART1 at 1Hz
+  uint8_t enableRAWX[] = {
+    0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
+    0x02, 0x15,             // RXM-RAWX
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x27, 0x47
+  };
+  GPSSerial.write(enableRAWX, sizeof(enableRAWX));
+  delay(50);
+
+  // UBX-CFG-MSG: Enable UBX-RXM-SFRBX on UART1 at 1Hz
+  uint8_t enableSFRBX[] = {
+    0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
+    0x02, 0x13,             // RXM-SFRBX
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x25, 0x3F
+  };
+  GPSSerial.write(enableSFRBX, sizeof(enableSFRBX));
+  delay(50);
+
+  // UBX-CFG-MSG: Enable UBX-NAV-PVT on UART1 at 1Hz
+  uint8_t enablePVT[] = {
+    0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
+    0x01, 0x07,             // NAV-PVT
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x18, 0xE1
+  };
+  GPSSerial.write(enablePVT, sizeof(enablePVT));
+  delay(50);
+
+  // ========== RTCM MONITORING ==========
+
+  // UBX-CFG-MSG: Enable UBX-RXM-RTCM on UART1 for RTCM status
+  uint8_t enableRxmRtcm[] = {
+    0xB5, 0x62, 0x06, 0x01, 0x08, 0x00,
+    0x02, 0x32,             // RXM-RTCM
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+    0x44, 0x16
+  };
+  GPSSerial.write(enableRxmRtcm, sizeof(enableRxmRtcm));
+  delay(50);
+  Serial.println("[GPS] RXM-RTCM monitoring enabled");
+
+  // ========== SAVE CONFIGURATION TO FLASH ==========
+  // UBX-CFG-CFG: Save all settings to BBR + Flash + EEPROM
+  // This persists the configuration across power cycles
+  uint8_t cfgSave[] = {
+    0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00,
+    0x00, 0x00, 0x00, 0x00,   // clearMask (don't clear anything)
+    0x1F, 0x1F, 0x00, 0x00,   // saveMask (save all sections)
+    0x00, 0x00, 0x00, 0x00,   // loadMask (don't load)
+    0x17,                     // deviceMask: BBR + Flash + EEPROM + SPI Flash
+    0x71, 0xDF                // checksum
+  };
+  GPSSerial.write(cfgSave, sizeof(cfgSave));
+  delay(500);  // Give time for flash write
+  Serial.println("[GPS] Configuration saved to flash");
+
+  Serial.println("[GPS] M8P configured for PPK (RAWX/SFRBX) + RTK (RTCM input)");
+}
+
 File logFile;
 File rawFile;                       // UBX raw data for PPK
 
@@ -175,6 +315,8 @@ UBXState ubxState = UBX_WAIT_SYNC1;
 bool ppkLoggingEnabled = false;     // PPK raw logging starts OFF with recording
 uint32_t ubxMessagesLogged = 0;
 uint32_t ubxBytesWritten = 0;
+uint32_t rawxMsgReceived = 0;       // Count of RAWX msgs received (for debug)
+uint32_t lastRawxDebugPrint = 0;    // Last time we printed RAWX debug
 char rawFileName[64];
 
 // ========== DEEPER/SONAR DATA ==========
@@ -316,6 +458,23 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo& connInfo) override {
     std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
+      // Check if this is RTCM data (starts with 0xD3 preamble)
+      if (rxValue.length() >= 3 && (uint8_t)rxValue[0] == 0xD3) {
+        // RTCM binary data - forward directly to GPS
+        rtcmBleReceived += rxValue.length();
+        GPSSerial.write((const uint8_t*)rxValue.data(), rxValue.length());
+        rtcmBleForwarded += rxValue.length();
+
+        // Debug output every 5 seconds
+        if (millis() - lastRtcmBleDebug > 5000) {
+          Serial.print("[BLE-RTCM] Forwarded ");
+          Serial.print(rtcmBleForwarded);
+          Serial.println(" bytes to GPS");
+          lastRtcmBleDebug = millis();
+        }
+        return;
+      }
+
       // Text command - add to buffer
       Serial.print("[BLE] RX: ");
       Serial.println(rxValue.c_str());
@@ -386,7 +545,8 @@ void setup() {
 
   // Init GPS UART
   Serial.print("[INIT] GPS UART... ");
-  GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, -1);  // RX only, no TX needed
+  GPSSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);  // RX and TX for config
+  configureM8P();  // Enable RAWX output for PPK
   Serial.println("OK");
 
   // Phase 1: Set WiFi mode (needed for BLE coexistence)
@@ -1063,6 +1223,24 @@ void updateDisplay() {
   }
   display.print(" PPK:");
   display.print(ubxMessagesLogged);
+  display.println();
+
+  // Row 7: RTCM status (for RTK)
+  display.print("RTCM:");
+  // Show BLE RTCM if receiving, otherwise show LoRa RTCM
+  if (rtcmBleForwarded > 0) {
+    display.print(rtcmBleForwarded / 1000);  // KB received
+    display.print("KB");
+  } else {
+    display.print(rtcmMsgReceived);
+  }
+  // Show age of last RTCM
+  uint32_t rtcmAge = (millis() - rtcmLastReceived) / 1000;
+  if (rtcmLastReceived > 0 && rtcmAge < 999) {
+    display.print(" ");
+    display.print(rtcmAge);
+    display.print("s");
+  }
 
   display.display();
 }
@@ -1211,13 +1389,52 @@ void writeUBXMessage() {
     return;  // Don't log NAV-PVT to raw file
   }
 
+  // Parse RXM-RTCM for RTCM reception status
+  if (ubxClass == UBX_CLASS_RXM && ubxId == UBX_ID_RTCM && ubxPayloadLen >= 8) {
+    uint8_t* payload = &ubxBuffer[6];
+    uint8_t flags = payload[1];
+    rtcmCrcFailed = (flags & 0x01) != 0;
+    uint8_t msgUsed = (flags >> 1) & 0x03;  // 0=unknown, 1=failed, 2=used
+    rtcmLastRefStation = payload[4] | (payload[5] << 8);
+    rtcmLastMsgType = payload[6] | (payload[7] << 8);
+
+    if (!rtcmCrcFailed) {
+      rtcmMsgReceived++;
+      rtcmLastReceived = millis();
+    }
+
+    // Debug output every 10 seconds
+    static uint32_t lastRtcmDebug = 0;
+    if (millis() - lastRtcmDebug > 10000) {
+      Serial.print("[RTCM] Received ");
+      Serial.print(rtcmMsgReceived);
+      Serial.print(" msgs, last type ");
+      Serial.print(rtcmLastMsgType);
+      Serial.print(" from station ");
+      Serial.println(rtcmLastRefStation);
+      lastRtcmDebug = millis();
+    }
+    return;  // Don't log RXM-RTCM to raw file
+  }
+
   // Log RAWX and SFRBX messages to raw file (needed for PPK)
-  if (!rawFile || !ppkLoggingEnabled) return;
   if (ubxClass == UBX_CLASS_RXM && (ubxId == UBX_ID_RAWX || ubxId == UBX_ID_SFRBX)) {
-    size_t totalLen = 6 + ubxPayloadLen + 2;
-    rawFile.write(ubxBuffer, totalLen);
-    ubxBytesWritten += totalLen;
-    ubxMessagesLogged++;
+    rawxMsgReceived++;
+    // Debug: print every 10 seconds to confirm RAWX reception
+    if (millis() - lastRawxDebugPrint > 10000) {
+      Serial.print("[RAWX] Received ");
+      Serial.print(rawxMsgReceived);
+      Serial.print(" msgs, logged ");
+      Serial.println(ubxMessagesLogged);
+      lastRawxDebugPrint = millis();
+    }
+
+    if (rawFile && ppkLoggingEnabled) {
+      size_t totalLen = 6 + ubxPayloadLen + 2;
+      rawFile.write(ubxBuffer, totalLen);
+      ubxBytesWritten += totalLen;
+      ubxMessagesLogged++;
+    }
   }
 }
 

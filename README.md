@@ -124,6 +124,25 @@ Example:
 
 ## Recent Changes (December 2024)
 
+### v1.3.0 - December 25, 2024
+#### Android App
+- **Raw RTCM via BLE**: NTRIP client now sends raw RTCM3 data (0xD3 preamble) to B-Box
+- **Removed RTCM prefix**: BLE transmission sends raw binary without "RTCM:" prefix for M8P compatibility
+
+#### B-Box Firmware
+- **M8P RTCM Input Configuration**: Added complete UBX configuration for receiving RTK corrections
+  - UBX-CFG-PRT: UART1 configured for RTCM3 input (inProtoMask=0x21)
+  - UBX-CFG-TMODE3: Rover mode (mode=0) for mobile operation
+  - UBX-CFG-DGNSS: RTK mode 3 for float+fixed solutions
+  - UBX-CFG-MSG: Enabled UBX-RXM-RTCM for correction monitoring
+  - UBX-CFG-CFG: Configuration saved to M8P flash memory
+- **BLE RTCM Forwarding**: Detects raw RTCM data (0xD3 preamble) from BLE and forwards to GPS
+- **RTCM Status Display**: OLED shows RTCM KB received via BLE
+- **RAWX Logging**: Enabled UBX-RXM-RAWX and SFRBX for PPK post-processing
+
+#### New Documentation
+- **M8P_CONFIG_REFERENCE.md**: Complete u-blox M8P configuration reference with UBX commands
+
 ### v1.2.0 - December 24, 2024
 #### Android App
 - **Project Management**: Added Project tab for organizing survey sessions
