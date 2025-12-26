@@ -411,11 +411,69 @@
                             android:id="@+id/btnDetailProcessPpk"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:text="Process PPK"
+                            android:text="Export for Desktop PPK"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#FF9800"
+                            android:enabled="false"
+                            android:layout_marginTop="12dp"/>
+
+                        <Button
+                            android:id="@+id/btnDetailImportSolution"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Import Solution (.pos)"
+                            android:textColor="#ffffff"
+                            android:backgroundTint="#00bcd4"
+                            android:enabled="false"
+                            android:layout_marginTop="8dp"/>
+
+                        <Button
+                            android:id="@+id/btnDetailRunPpk"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Process PPK (On-Device)"
                             android:textColor="#ffffff"
                             android:backgroundTint="#4CAF50"
                             android:enabled="false"
-                            android:layout_marginTop="12dp"/>
+                            android:visibility="gone"
+                            android:layout_marginTop="8dp"/>
+
+                        <LinearLayout
+                            android:id="@+id/layoutDetailPpkResults"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="vertical"
+                            android:visibility="gone"
+                            android:layout_marginTop="12dp"
+                            android:padding="8dp"
+                            android:background="#1a1a2e">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="PPK Results"
+                                android:textColor="#4CAF50"
+                                android:textSize="12sp"
+                                android:textStyle="bold"/>
+
+                            <TextView
+                                android:id="@+id/tvDetailPpkResults"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Fixed: 0% | Float: 0% | Single: 0%"
+                                android:textColor="#ffffff"
+                                android:textSize="14sp"
+                                android:layout_marginTop="4dp"/>
+
+                            <Button
+                                android:id="@+id/btnDetailExportMerged"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:text="Export Corrected CSV"
+                                android:textColor="#ffffff"
+                                android:backgroundTint="#4CAF50"
+                                android:layout_marginTop="8dp"/>
+                        </LinearLayout>
                     </LinearLayout>
 
                     <!-- Export Section -->
