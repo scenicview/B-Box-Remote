@@ -150,7 +150,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fixIndicator: View
     private lateinit var fixStatus: TextView
     private lateinit var satellites: TextView
-    private lateinit var carrSolnValue: TextView
+    private lateinit var hAccValue: TextView
+    private lateinit var vAccValue: TextView
     private lateinit var pdopValue: TextView
     private lateinit var hdopValue: TextView
     private lateinit var latLonValue: TextView
@@ -461,7 +462,8 @@ class MainActivity : AppCompatActivity() {
         fixIndicator = findViewById(R.id.fixIndicator)
         fixStatus = findViewById(R.id.fixStatus)
         satellites = findViewById(R.id.satellites)
-        carrSolnValue = findViewById(R.id.carrSolnValue)
+        hAccValue = findViewById(R.id.hAccValue)
+        vAccValue = findViewById(R.id.vAccValue)
         pdopValue = findViewById(R.id.pdopValue)
         hdopValue = findViewById(R.id.hdopValue)
         latLonValue = findViewById(R.id.latLonValue)
@@ -1287,16 +1289,18 @@ class MainActivity : AppCompatActivity() {
                 val carrSoln = if (parts.size >= 9) parts[8].trim().toIntOrNull() ?: 0 else 0
                 val pdop = if (parts.size >= 10) parts[9].trim().toFloatOrNull() ?: 99.9f else 99.9f
                 val hdop = if (parts.size >= 11) parts[10].trim().toFloatOrNull() ?: 99.9f else 99.9f
-                val lat = if (parts.size >= 12) parts[11].trim().toDoubleOrNull() ?: 0.0 else 0.0
-                val lon = if (parts.size >= 13) parts[12].trim().toDoubleOrNull() ?: 0.0 else 0.0
-                updateDisplay(fix, sats, depth, temp, recording, pitch, roll, carrSoln, pdop, hdop, lat, lon)
+                val hAcc = if (parts.size >= 12) parts[11].trim().toFloatOrNull() ?: 99.9f else 99.9f
+                val vAcc = if (parts.size >= 13) parts[12].trim().toFloatOrNull() ?: 99.9f else 99.9f
+                val lat = if (parts.size >= 14) parts[13].trim().toDoubleOrNull() ?: 0.0 else 0.0
+                val lon = if (parts.size >= 15) parts[14].trim().toDoubleOrNull() ?: 0.0 else 0.0
+                updateDisplay(fix, sats, depth, temp, recording, pitch, roll, carrSoln, pdop, hdop, hAcc, vAcc, lat, lon)
             } catch (e: Exception) {
                 android.util.Log.e("DeeperRTK", "Parse error: " + e.message)
             }
         }
     }
 
-    private fun updateDisplay(fix: Int, sats: Int, depth: Float, temp: Float, recording: Boolean, pitch: Float, roll: Float, carrSoln: Int = 0, pdop: Float = 99.9f, hdop: Float = 99.9f, lat: Double = 0.0, lon: Double = 0.0) {
+    private fun updateDisplay(fix: Int, sats: Int, depth: Float, temp: Float, recording: Boolean, pitch: Float, roll: Float, carrSoln: Int = 0, pdop: Float = 99.9f, hdop: Float = 99.9f, hAcc: Float = 99.9f, vAcc: Float = 99.9f, lat: Double = 0.0, lon: Double = 0.0) {
         // GPS Fix Status
         when (fix) {
             0 -> { fixStatus.text = "No Fix"; fixStatus.setTextColor(0xFF888888.toInt()); fixIndicator.setBackgroundResource(R.drawable.indicator_no_fix) }
@@ -1315,19 +1319,24 @@ class MainActivity : AppCompatActivity() {
             else -> 0xFF4CAF50.toInt()       // Green
         })
 
-        // Carrier solution status
-        val carrText = when (carrSoln) {
-            0 -> "None"
-            1 -> "Float"
-            2 -> "Fixed"
-            else -> "--"
+        // Horizontal and Vertical Accuracy
+        hAccValue.text = if (hAcc < 50) String.format("%.2f m", hAcc) else "--"
+        vAccValue.text = if (vAcc < 50) String.format("%.2f m", vAcc) else "--"
+        // Color code accuracy: green <0.05m (5cm), cyan <0.5m, yellow <2m, red >2m
+        val hAccColor = when {
+            hAcc < 0.05 -> 0xFF4CAF50.toInt()   // Green - cm level (RTK Fixed)
+            hAcc < 0.5 -> 0xFF00BCD4.toInt()    // Cyan - sub-meter (RTK Float)
+            hAcc < 2.0 -> 0xFFFFEB3B.toInt()    // Yellow - meter level
+            else -> 0xFFf44336.toInt()          // Red - poor
         }
-        carrSolnValue.text = carrText
-        carrSolnValue.setTextColor(when (carrSoln) {
-            2 -> 0xFF4CAF50.toInt()   // Fixed = Green
-            1 -> 0xFF00BCD4.toInt()   // Float = Cyan
-            else -> 0xFF888888.toInt() // None = Gray
-        })
+        val vAccColor = when {
+            vAcc < 0.10 -> 0xFF4CAF50.toInt()   // Green - 10cm level
+            vAcc < 1.0 -> 0xFF00BCD4.toInt()    // Cyan - sub-meter
+            vAcc < 3.0 -> 0xFFFFEB3B.toInt()    // Yellow - meter level
+            else -> 0xFFf44336.toInt()          // Red - poor
+        }
+        hAccValue.setTextColor(hAccColor)
+        vAccValue.setTextColor(vAccColor)
 
         // PDOP and HDOP
         pdopValue.text = if (pdop < 50) String.format("%.1f", pdop) else "--"
@@ -2501,6 +2510,7 @@ class MainActivity : AppCompatActivity() {
 
         return when (msgType) {
             1005, 1006 -> {
+                // Station position - can be rate-limited (static, doesn't change)
                 val interval = if (hzStation > 0) (1000.0 / hzStation).toLong() else Long.MAX_VALUE
                 if (now - lastStationTime >= interval) {
                     lastStationTime = now
@@ -2508,39 +2518,19 @@ class MainActivity : AppCompatActivity() {
                     true
                 } else false
             }
-            in 1071..1077 -> {
-                val interval = if (hzGps > 0) (1000.0 / hzGps).toLong() else Long.MAX_VALUE
-                if (now - lastGpsTime >= interval) {
-                    lastGpsTime = now
-                    cntGps++
-                    true
-                } else false
-            }
-            in 1081..1087 -> {
-                val interval = if (hzGlo > 0) (1000.0 / hzGlo).toLong() else Long.MAX_VALUE
-                if (now - lastGloTime >= interval) {
-                    lastGloTime = now
-                    cntGlo++
-                    true
-                } else false
-            }
-            in 1091..1097 -> {
-                val interval = if (hzGal > 0) (1000.0 / hzGal).toLong() else Long.MAX_VALUE
-                if (now - lastGalTime >= interval) {
-                    lastGalTime = now
-                    cntGal++
-                    true
-                } else false
-            }
-            in 1121..1127 -> {
-                val interval = if (hzBds > 0) (1000.0 / hzBds).toLong() else Long.MAX_VALUE
-                if (now - lastBdsTime >= interval) {
-                    lastBdsTime = now
-                    cntBds++
-                    true
-                } else false
+            // ALL MSM messages - forward ALL without any rate limiting (TEST MODE)
+            // No timing window - just pass everything through
+            in 1071..1077, in 1081..1087, in 1091..1097, in 1121..1127 -> {
+                when (msgType) {
+                    in 1071..1077 -> cntGps++
+                    in 1081..1087 -> cntGlo++
+                    in 1091..1097 -> cntGal++
+                    in 1121..1127 -> cntBds++
+                }
+                true  // Always forward - no windowing
             }
             1230 -> {
+                // GLONASS biases - can be rate-limited
                 val interval = if (hzBias > 0) (1000.0 / hzBias).toLong() else Long.MAX_VALUE
                 if (now - lastBiasTime >= interval) {
                     lastBiasTime = now

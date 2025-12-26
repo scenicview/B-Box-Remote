@@ -631,7 +631,7 @@
                             android:textSize="16sp"/>
                     </LinearLayout>
 
-                    <!-- Carrier Solution Row -->
+                    <!-- Accuracy Row -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -643,13 +643,30 @@
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:text="RTK"
+                            android:text="H.Acc"
                             android:textColor="#ffffff"
                             android:textSize="16sp"
                             android:layout_marginEnd="8dp"/>
 
                         <TextView
-                            android:id="@+id/carrSolnValue"
+                            android:id="@+id/hAccValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="16dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="V.Acc"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/vAccValue"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="--"

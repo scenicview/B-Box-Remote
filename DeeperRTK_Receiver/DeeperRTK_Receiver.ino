@@ -377,6 +377,8 @@ struct GPSStatus {
   double longitude;
   float pdop;
   float hdop;
+  float hAcc;           // horizontal accuracy in meters
+  float vAcc;           // vertical accuracy in meters
   float altitude;
   float rtcmAge;
   uint32_t lastUpdate;
@@ -386,7 +388,7 @@ struct GPSStatus {
   uint8_t utcSeconds;
   uint16_t utcMillis;     // fractional seconds (0-999)
   bool timeValid;
-} gps = {false, 0, 0, 0, 0.0, 0.0, 99.9, 99.9, 0.0, 0.0, 0, 0, 0, 0, 0, false};
+} gps = {false, 0, 0, 0, 0.0, 0.0, 99.9, 99.9, 99.9, 99.9, 0.0, 0.0, 0, 0, 0, 0, 0, false};
 
 // ========== STATISTICS ==========
 int16_t lastRSSI = 0;
@@ -1476,6 +1478,14 @@ void writeUBXMessage() {
     int32_t alt = payload[36] | (payload[37] << 8) | (payload[38] << 16) | (payload[39] << 24);
     gps.altitude = alt / 1000.0f;
 
+    // Horizontal accuracy (bytes 40-43) - mm
+    uint32_t hAccMm = payload[40] | (payload[41] << 8) | (payload[42] << 16) | (payload[43] << 24);
+    gps.hAcc = hAccMm / 1000.0f;  // Convert to meters
+
+    // Vertical accuracy (bytes 44-47) - mm
+    uint32_t vAccMm = payload[44] | (payload[45] << 8) | (payload[46] << 16) | (payload[47] << 24);
+    gps.vAcc = vAccMm / 1000.0f;  // Convert to meters
+
     // PDOP (bytes 76-77) and HDOP (bytes 78-79) - 0.01 scale
     uint16_t pDOP = payload[76] | (payload[77] << 8);
     uint16_t hDOP = payload[78] | (payload[79] << 8);
@@ -1883,6 +1893,11 @@ void sendBluetoothStatus() {
   status += String(gps.pdop, 2);
   status += ",";
   status += String(gps.hdop, 2);
+  // Add accuracy estimates
+  status += ",";
+  status += String(gps.hAcc, 2);
+  status += ",";
+  status += String(gps.vAcc, 2);
   // Add lat/lon for app display
   status += ",";
   // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
