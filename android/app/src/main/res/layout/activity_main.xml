@@ -631,6 +631,75 @@
                             android:textSize="16sp"/>
                     </LinearLayout>
 
+                    <!-- Carrier Solution Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="8dp"
+                        android:layout_marginStart="24dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="RTK"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/carrSolnValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+
+                    <!-- DOP Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical"
+                        android:layout_marginBottom="8dp"
+                        android:layout_marginStart="24dp">
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="PDOP"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/pdopValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="16dp"/>
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="HDOP"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"
+                            android:layout_marginEnd="8dp"/>
+
+                        <TextView
+                            android:id="@+id/hdopValue"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:text="--"
+                            android:textColor="#ffffff"
+                            android:textSize="16sp"/>
+                    </LinearLayout>
+
                     <!-- Lat/Lon Row -->
                     <TextView
                         android:id="@+id/latLonValue"

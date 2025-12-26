@@ -150,6 +150,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var fixIndicator: View
     private lateinit var fixStatus: TextView
     private lateinit var satellites: TextView
+    private lateinit var carrSolnValue: TextView
+    private lateinit var pdopValue: TextView
+    private lateinit var hdopValue: TextView
     private lateinit var latLonValue: TextView
     private lateinit var depthValue: TextView
     private lateinit var tempValue: TextView
@@ -458,6 +461,9 @@ class MainActivity : AppCompatActivity() {
         fixIndicator = findViewById(R.id.fixIndicator)
         fixStatus = findViewById(R.id.fixStatus)
         satellites = findViewById(R.id.satellites)
+        carrSolnValue = findViewById(R.id.carrSolnValue)
+        pdopValue = findViewById(R.id.pdopValue)
+        hdopValue = findViewById(R.id.hdopValue)
         latLonValue = findViewById(R.id.latLonValue)
         depthValue = findViewById(R.id.depthValue)
         tempValue = findViewById(R.id.tempValue)
@@ -1267,7 +1273,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Parse status: FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL
+        // Parse status: FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL,CARR,PDOP,HDOP,LAT,LON
         val parts = line.split(",")
         if (parts.size >= 6) {
             try {
@@ -1278,16 +1284,19 @@ class MainActivity : AppCompatActivity() {
                 val recording = parts[5].trim() == "1"
                 val pitch = if (parts.size >= 7) parts[6].toFloatOrNull() ?: 0f else 0f
                 val roll = if (parts.size >= 8) parts[7].trim().toFloatOrNull() ?: 0f else 0f
-                val lat = if (parts.size >= 9) parts[8].trim().toDoubleOrNull() ?: 0.0 else 0.0
-                val lon = if (parts.size >= 10) parts[9].trim().toDoubleOrNull() ?: 0.0 else 0.0
-                updateDisplay(fix, sats, depth, temp, recording, pitch, roll, lat, lon)
+                val carrSoln = if (parts.size >= 9) parts[8].trim().toIntOrNull() ?: 0 else 0
+                val pdop = if (parts.size >= 10) parts[9].trim().toFloatOrNull() ?: 99.9f else 99.9f
+                val hdop = if (parts.size >= 11) parts[10].trim().toFloatOrNull() ?: 99.9f else 99.9f
+                val lat = if (parts.size >= 12) parts[11].trim().toDoubleOrNull() ?: 0.0 else 0.0
+                val lon = if (parts.size >= 13) parts[12].trim().toDoubleOrNull() ?: 0.0 else 0.0
+                updateDisplay(fix, sats, depth, temp, recording, pitch, roll, carrSoln, pdop, hdop, lat, lon)
             } catch (e: Exception) {
                 android.util.Log.e("DeeperRTK", "Parse error: " + e.message)
             }
         }
     }
 
-    private fun updateDisplay(fix: Int, sats: Int, depth: Float, temp: Float, recording: Boolean, pitch: Float, roll: Float, lat: Double = 0.0, lon: Double = 0.0) {
+    private fun updateDisplay(fix: Int, sats: Int, depth: Float, temp: Float, recording: Boolean, pitch: Float, roll: Float, carrSoln: Int = 0, pdop: Float = 99.9f, hdop: Float = 99.9f, lat: Double = 0.0, lon: Double = 0.0) {
         // GPS Fix Status
         when (fix) {
             0 -> { fixStatus.text = "No Fix"; fixStatus.setTextColor(0xFF888888.toInt()); fixIndicator.setBackgroundResource(R.drawable.indicator_no_fix) }
@@ -1305,6 +1314,38 @@ class MainActivity : AppCompatActivity() {
             sats <= 8 -> 0xFFFFEB3B.toInt()  // Yellow
             else -> 0xFF4CAF50.toInt()       // Green
         })
+
+        // Carrier solution status
+        val carrText = when (carrSoln) {
+            0 -> "None"
+            1 -> "Float"
+            2 -> "Fixed"
+            else -> "--"
+        }
+        carrSolnValue.text = carrText
+        carrSolnValue.setTextColor(when (carrSoln) {
+            2 -> 0xFF4CAF50.toInt()   // Fixed = Green
+            1 -> 0xFF00BCD4.toInt()   // Float = Cyan
+            else -> 0xFF888888.toInt() // None = Gray
+        })
+
+        // PDOP and HDOP
+        pdopValue.text = if (pdop < 50) String.format("%.1f", pdop) else "--"
+        hdopValue.text = if (hdop < 50) String.format("%.1f", hdop) else "--"
+        // Color code DOP: green <2, yellow 2-5, red >5
+        val pdopColor = when {
+            pdop < 2 -> 0xFF4CAF50.toInt()   // Green
+            pdop <= 5 -> 0xFFFFEB3B.toInt()  // Yellow
+            else -> 0xFFf44336.toInt()       // Red
+        }
+        val hdopColor = when {
+            hdop < 2 -> 0xFF4CAF50.toInt()   // Green
+            hdop <= 5 -> 0xFFFFEB3B.toInt()  // Yellow
+            else -> 0xFFf44336.toInt()       // Red
+        }
+        pdopValue.setTextColor(pdopColor)
+        hdopValue.setTextColor(hdopColor)
+
         if (lat != 0.0 && lon != 0.0) {
             latLonValue.text = String.format("%.6f, %.6f", lat, lon)
         } else {

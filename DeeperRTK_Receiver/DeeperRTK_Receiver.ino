@@ -371,9 +371,11 @@ uint16_t udpNmeaIndex = 0;
 struct GPSStatus {
   bool valid;
   uint8_t fixQuality;     // 0=invalid, 1=GPS, 2=DGPS, 4=RTK Fix, 5=RTK Float
+  uint8_t carrSoln;       // 0=none, 1=float, 2=fixed
   uint8_t satellites;
   double latitude;
   double longitude;
+  float pdop;
   float hdop;
   float altitude;
   float rtcmAge;
@@ -384,7 +386,7 @@ struct GPSStatus {
   uint8_t utcSeconds;
   uint16_t utcMillis;     // fractional seconds (0-999)
   bool timeValid;
-} gps = {false, 0, 0, 0.0, 0.0, 99.9, 0.0, 0.0, 0, 0, 0, 0, 0, false};
+} gps = {false, 0, 0, 0, 0.0, 0.0, 99.9, 99.9, 0.0, 0.0, 0, 0, 0, 0, 0, false};
 
 // ========== STATISTICS ==========
 int16_t lastRSSI = 0;
@@ -402,6 +404,7 @@ uint32_t startTime = 0;
 // ========== SD CARD STATE ==========
 bool sdCardReady = false;
 bool recordingEnabled = false;  // Controlled via Bluetooth, starts OFF
+bool passthroughMode = false;   // UART passthrough mode for M8P configuration
 char logFileName[64];
 char currentProjectName[64] = "";  // Project name for file naming
 
@@ -458,14 +461,28 @@ class MyCallbacks: public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *pCharacteristic, NimBLEConnInfo& connInfo) override {
     std::string rxValue = pCharacteristic->getValue();
     if (rxValue.length() > 0) {
-      // Check if this is RTCM data (starts with 0xD3 preamble)
-      if (rxValue.length() >= 3 && (uint8_t)rxValue[0] == 0xD3) {
-        // RTCM binary data - forward directly to GPS
+      // Check if this is binary data (RTCM or continuation chunk)
+      // App sends RTCM in 200-byte chunks - only first starts with 0xD3
+      bool isBinary = false;
+      if ((uint8_t)rxValue[0] == 0xD3) {
+        isBinary = true;  // RTCM preamble
+      } else {
+        // Check for high bytes (binary data has bytes >= 0x80)
+        for (size_t i = 0; i < rxValue.length() && i < 20; i++) {
+          if ((uint8_t)rxValue[i] >= 0x80) {
+            isBinary = true;
+            break;
+          }
+        }
+      }
+
+      if (isBinary) {
+        // Binary data (RTCM chunk) - forward to GPS
         rtcmBleReceived += rxValue.length();
         GPSSerial.write((const uint8_t*)rxValue.data(), rxValue.length());
         rtcmBleForwarded += rxValue.length();
 
-        // Debug output every 5 seconds
+        // Debug every 5 seconds
         if (millis() - lastRtcmBleDebug > 5000) {
           Serial.print("[BLE-RTCM] Forwarded ");
           Serial.print(rtcmBleForwarded);
@@ -573,6 +590,35 @@ void setup() {
 
 // ========== MAIN LOOP ==========
 void loop() {
+  // PASSTHROUGH MODE - bypass all normal processing
+  if (passthroughMode) {
+    // Forward USB to GPS
+    while (Serial.available()) {
+      char b = Serial.read();
+      // Check for +++ exit sequence
+      static uint8_t plusCnt = 0;
+      static uint32_t lastPlus = 0;
+      if (b == '+') {
+        if (millis() - lastPlus < 500) plusCnt++;
+        else plusCnt = 1;
+        lastPlus = millis();
+        if (plusCnt >= 3) {
+          passthroughMode = false;
+          plusCnt = 0;
+          Serial.println();
+          Serial.println("[PASSTHROUGH] Exited");
+          return;
+        }
+      }
+      GPSSerial.write(b);
+    }
+    // Forward GPS to USB
+    while (GPSSerial.available()) {
+      Serial.write(GPSSerial.read());
+    }
+    return;  // Skip all other processing
+  }
+
   // 1. Handle WiFi connection state machine
   handleWiFi();
 
@@ -596,9 +642,48 @@ void loop() {
     lastGpsDebug = millis();
   }
 
-  // 4b. Handle USB serial commands
+  // 4b. Handle USB serial commands (or passthrough mode)
   static char serialCmd[32];
   static int serialCmdIdx = 0;
+  static uint8_t plusCount = 0;
+  static uint32_t lastPlusTime = 0;
+
+  // In passthrough mode, forward USB->GPS and GPS->USB
+  if (passthroughMode) {
+    // Forward USB serial to M8P
+    while (Serial.available()) {
+      uint8_t b = Serial.read();
+      // Check for +++ escape sequence
+      if (b == '+') {
+        if (millis() - lastPlusTime < 500) {
+          plusCount++;
+        } else {
+          plusCount = 1;
+        }
+        lastPlusTime = millis();
+        if (plusCount >= 3) {
+          passthroughMode = false;
+          plusCount = 0;
+          Serial.println();
+          Serial.println("[PASSTHROUGH] Exited passthrough mode");
+          continue;
+        }
+      } else {
+        // Send any buffered + characters
+        while (plusCount > 0) {
+          GPSSerial.write('+');
+          plusCount--;
+        }
+      }
+      GPSSerial.write(b);
+    }
+    // Forward M8P to USB serial (raw binary)
+    while (GPSSerial.available()) {
+      Serial.write(GPSSerial.read());
+    }
+    return;  // Skip normal processing in passthrough mode
+  }
+
   while (Serial.available()) {
     char c = Serial.read();
     if (c == 10 || c == 13) {
@@ -632,6 +717,17 @@ void loop() {
               if (rxBuf[i] != testPattern[i]) match = false;
             }
             Serial.println(match ? "[LOOPBACK] PASS!" : "[LOOPBACK] FAIL - mismatch!");
+          }
+        } else if (strcmp(serialCmd, "PASSTHROUGH") == 0) {
+          Serial.println("[PASSTHROUGH] Entering M8P passthrough mode");
+          Serial.println("[PASSTHROUGH] All data forwarded to/from M8P");
+          Serial.println("[PASSTHROUGH] Send +++ to exit");
+          passthroughMode = true;
+          while (GPSSerial.available()) GPSSerial.read();  // Flush
+        } else if (strcmp(serialCmd, "+++") == 0) {
+          if (passthroughMode) {
+            passthroughMode = false;
+            Serial.println("[PASSTHROUGH] Exited passthrough mode");
           }
         }
         serialCmdIdx = 0;
@@ -1350,6 +1446,7 @@ void writeUBXMessage() {
     uint8_t flags = payload[21];
     bool gnssFixOK = (flags & 0x01) != 0;
     uint8_t carrSoln = (flags >> 6) & 0x03;  // RTK status: 0=none, 1=float, 2=fixed
+    gps.carrSoln = carrSoln;  // Store for BLE status
 
     // Convert to NMEA fix quality
     if (!gnssFixOK || fixType < 2) {
@@ -1364,7 +1461,7 @@ void writeUBXMessage() {
       gps.fixQuality = 1;  // GPS (3D fix)
     }
 
-    // Satellites (byte 23)
+    // Satellites (byte 23) - use NAV-PVT numSV (includes all constellations)
     gps.satellites = payload[23];
 
     // Longitude (bytes 24-27) - 1e-7 degrees
@@ -1379,9 +1476,11 @@ void writeUBXMessage() {
     int32_t alt = payload[36] | (payload[37] << 8) | (payload[38] << 16) | (payload[39] << 24);
     gps.altitude = alt / 1000.0f;
 
-    // PDOP (bytes 76-77) - 0.01 scale
+    // PDOP (bytes 76-77) and HDOP (bytes 78-79) - 0.01 scale
     uint16_t pDOP = payload[76] | (payload[77] << 8);
-    gps.hdop = pDOP / 100.0f;
+    uint16_t hDOP = payload[78] | (payload[79] << 8);
+    gps.pdop = pDOP / 100.0f;
+    gps.hdop = hDOP / 100.0f;
 
     gps.valid = gnssFixOK && (gps.latitude != 0.0 || gps.longitude != 0.0);
     gps.lastUpdate = millis();
@@ -1567,8 +1666,9 @@ void parseGPSNmea(char* nmea) {
     lastNmeaDebug = millis();
   }
 
+  // Parse any GGA message (GPGGA, GNGGA, etc)
   if (strstr(nmea, "GGA") != NULL) {
-    Serial.print("[GGA FOUND] ");
+    Serial.print("[GGA] ");
     Serial.println(nmea);
     char temp[NMEA_BUFFER_SIZE];
     strncpy(temp, nmea, NMEA_BUFFER_SIZE);
@@ -1599,7 +1699,8 @@ void parseGPSNmea(char* nmea) {
       }
 
       gps.fixQuality = atoi(fields[6]);
-      gps.satellites = atoi(fields[7]);
+      // Skip GGA satellites - use NAV-PVT instead (has combined GPS+GLONASS count)
+      // gps.satellites = atoi(fields[7]);
       gps.hdop = atof(fields[8]);
       gps.altitude = atof(fields[9]);
       gps.rtcmAge = atof(fields[13]);
@@ -1749,7 +1850,7 @@ void sendBluetoothStatus() {
     localGpsValid = false;
   }
 
-  // Format: FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL,LAT,LON
+  // Format: FIX,SATS,DEPTH,TEMP,BATT,REC,PITCH,ROLL,CARR,PDOP,HDOP,LAT,LON
   // Example: 4,12,1.25,18.5,85,1,5.2,-3.1,54.3742363,-126.7221132
   String status = String(localFixQuality);
   status += ",";
@@ -1775,6 +1876,13 @@ void sendBluetoothStatus() {
   } else {
     status += "0,0";  // Default to level if no IMU
   }
+  // Add carrSoln, pdop, hdop
+  status += ",";
+  status += String(gps.carrSoln);
+  status += ",";
+  status += String(gps.pdop, 2);
+  status += ",";
+  status += String(gps.hdop, 2);
   // Add lat/lon for app display
   status += ",";
   // Validate GPS: need fix, 4+ sats, both coords non-zero and in valid ranges
