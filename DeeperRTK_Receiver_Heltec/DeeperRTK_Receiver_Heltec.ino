@@ -1,37 +1,43 @@
 /*
- * TTGO LoRa32 V2.0 - B-BOX PPK Logger
+ * Heltec LoRa32 V3 - B-BOX PPK Logger
  * Logs Deeper sonar depth + GPS position for PPK post-processing
- * No real-time RTK - uses PPK correction in desktop app
  *
- * Hardware: TTGO LoRa32 V2.0 (ESP32 + SX1276 + OLED)
+ * Hardware: Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262 + OLED)
  *
  * Connections:
- *   TTGO IO33 (RX) <- M8P TX  - NMEA/UBX position data
- *   Built-in SD card slot (SD_MMC 1-bit mode)
+ *   Heltec IO18 (RX) <- M8P TX  - NMEA/UBX position data
+ *   External SD card module (SPI mode)
  *
  * WiFi: Connects to Deeper Chirp+2 AP for sonar data
- * LoRa: Receives RTK corrections from base station
+ * LoRa: Receives RTK corrections from base station (SX1262 via RadioLib)
  * BLE: Nordic UART Service for Android app control
- * IMU: ADXL345 accelerometer for tilt sensing (shared I2C with OLED)
+ * IMU: ADXL345 accelerometer for tilt sensing (I2C)
  *
- * Built-in SD Card Pins (DO NOT USE FOR OTHER PURPOSES):
- *   GPIO 14 = SD_CLK
- *   GPIO 15 = SD_CMD
- *   GPIO 2  = SD_DATA0
+ * Heltec V3 Pin Usage:
+ *   LoRa SX1262: CS=GPIO8, RST=GPIO12, DIO1=GPIO14, BUSY=GPIO13
+ *   OLED: SDA=GPIO17, SCL=GPIO18, RST=GPIO21
+ *   SD Card (SPI): CS=GPIO46, uses shared SPI bus
  *
- * Note: LoRa RST is hardwired to ESP32 EN pin (not GPIO 14)
+ * Note: Uses RadioLib for SX1262 with interrupt-based receive
  */
 
+// Heltec library must be first - sets up radio and display
+#include <heltec_unofficial.h>
+
 #include <SPI.h>
-#include <LoRa.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
-#include <SD_MMC.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <SD.h>  // Use SPI-based SD instead of SD_MMC (ESP32-S3 has limited SD_MMC)
 #include <NimBLEDevice.h>
 #include <Preferences.h>
+// NOTE: This firmware uses the SSD1306Wire library from Heltec instead of Adafruit.
+// The display API is different:
+// - display.clear() instead of display.clearDisplay()
+// - display.drawString(x, y, text) instead of display.print/println
+// - display.setFont(ArialMT_Plain_10) instead of display.setTextSize(1)
+// - No cursor - must specify x,y for each string
+
 
 Preferences prefs;
 
@@ -83,36 +89,82 @@ bool imuFilterInitialized = false;
 #define DEEPER_MEDIUM_CMD "$DEEP231,5*3D\r\n"   // 270-310 kHz
 #define DEEPER_NARROW_CMD "$DEEP231,6*3E\r\n"   // 635-715 kHz
 
-// ========== PIN DEFINITIONS (TTGO LoRa32 V2.0) ==========
-// LoRa SX1276
-#define LORA_SCK     5
-#define LORA_MISO    19
-#define LORA_MOSI    27
-#define LORA_CS      18
-#define LORA_RST     -1   // Hardwired to EN pin, not GPIO (per pinout diagram)
-#define LORA_DIO0    26
+// ========== PIN DEFINITIONS (Heltec LoRa32 V3) ==========
+// LoRa SX1262 pins are defined in heltec_unofficial.h:
+// SS=GPIO8, DIO1=GPIO14, RST_LoRa=GPIO12, BUSY_LoRa=GPIO13
+// SPI: SCK=GPIO9, MISO=GPIO11, MOSI=GPIO10
 
-// Built-in SD Card uses SD_MMC (1-bit mode), pins are fixed by hardware:
-// GPIO 14 = SD_CLK, GPIO 15 = SD_CMD, GPIO 2 = SD_DATA0
+// External SD Card Module (SPI mode) - connect to available GPIO
+#define SD_CS_PIN    46   // SD card chip select (choose unused GPIO)
 
-// OLED Display
-#define OLED_SDA     21
-#define OLED_SCL     22
+// OLED Display is handled by Heltec library:
+// SDA_OLED=GPIO17, SCL_OLED=GPIO18, RST_OLED=GPIO21
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-// Here+ GPS UART (Serial1)
-#define GPS_RX_PIN   33   // TTGO RX <- M8P TX - NMEA out
-#define GPS_TX_PIN   25   // TTGO TX -> M8P RX - for config commands
+// Here+ GPS UART - ESP32-S3 has flexible UART pins
+// Using available GPIOs not used by LoRa/OLED
+#define GPS_RX_PIN   47   // Heltec RX <- M8P TX - NMEA out
+#define GPS_TX_PIN   48   // Heltec TX -> M8P RX - for config commands
 #define GPS_BAUD     115200  // High speed for 10Hz PPK
 
+// I2C for ADXL345 IMU - share with OLED
+#define IMU_SDA      SDA_OLED   // GPIO17
+#define IMU_SCL      SCL_OLED   // GPIO18
+
 // ========== LORA CONFIGURATION (MUST MATCH TRANSMITTER) ==========
-#define LORA_FREQUENCY     915E6
-#define LORA_BANDWIDTH     125E3
+// RadioLib uses different units: frequency in MHz, bandwidth in kHz
+#define LORA_FREQUENCY     915.0    // MHz (was 915E6 Hz)
+#define LORA_BANDWIDTH     125.0    // kHz (was 125E3 Hz)
 #define LORA_SPREAD_FACTOR 7        // SF7 - DO NOT CHANGE
 #define LORA_CODING_RATE   5        // 4/5 - DO NOT CHANGE
 #define LORA_SYNC_WORD     0x12
 #define LORA_TX_POWER      20
+
+// RadioLib interrupt flag for SX1262
+volatile bool loraRxFlag = false;
+volatile bool loraTxDone = false;
+uint8_t loraRxBuffer[256];  // Buffer for received packet
+int loraRxLen = 0;
+
+// LoRa RX interrupt handler (called from ISR context)
+void IRAM_ATTR onLoRaRx() {
+  loraRxFlag = true;
+}
+
+// LoRa TX done interrupt handler
+void IRAM_ATTR onLoraTx() {
+  loraTxDone = true;
+}
+// Display helper for SSD1306Wire compatibility
+int displayLineY = 0;
+void displayPrint(const char* text) {
+  display.drawString(0, displayLineY, text);
+}
+void displayPrint(String text) {
+  display.drawString(0, displayLineY, text);
+}
+void displayPrint(int val) {
+  display.drawString(0, displayLineY, String(val));
+}
+void displayPrint(float val, int decimals = 2) {
+  display.drawString(0, displayLineY, String(val, decimals));
+}
+void displayPrintln(const char* text) {
+  display.drawString(0, displayLineY, text);
+  displayLineY += 10;
+}
+void displayPrintln(String text) {
+  display.drawString(0, displayLineY, text);
+  displayLineY += 10;
+}
+void displayPrintln() {
+  displayLineY += 10;
+}
+void displayResetCursor() {
+  displayLineY = 0;
+}
+
 
 // ========== LORA TELEMETRY (Status TX to Shore Station) ==========
 #define STATUS_PACKET_TYPE 0xBB     // Magic byte to identify status packets
@@ -187,7 +239,8 @@ enum UBXState {
 };
 
 // ========== OBJECTS ==========
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// Display is created by Heltec library as 'display' (SSD1306Wire)
+// No need to create - just use global 'display' object
 HardwareSerial GPSSerial(1);
 WiFiUDP udp;
 
@@ -558,36 +611,57 @@ void setup() {
   Serial.print("  LoRa SF:     "); Serial.println(LORA_SPREAD_FACTOR);
   Serial.println();
 
-  // Init OLED
-  Wire.begin(OLED_SDA, OLED_SCL);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("[ERROR] OLED init failed!");
-  }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("Deeper+RTK BLE");
-  display.println("Starting...");
+  // Enable external power (VEXT) for peripherals
+  heltec_ve(true);
+  delay(50);
+
+  // Init Heltec (handles SPI, but we'll init display manually)
+  heltec_setup();
+
+  // Manually reset and init OLED display
+  pinMode(RST_OLED, OUTPUT);
+  digitalWrite(RST_OLED, LOW);
+  delay(50);
+  digitalWrite(RST_OLED, HIGH);
+  delay(50);
+
+  display.init();
+  display.setContrast(255);
+  display.flipScreenVertically();
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(0, 0, "Deeper+RTK Heltec");
+  display.drawString(0, 12, "Starting...");
   display.display();
 
-  // Init SPI for LoRa (SD will share this bus)
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
+  // IMU uses same I2C bus as display - Wire already initialized
 
-  // Init LoRa
-  Serial.print("[INIT] LoRa... ");
-  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
-  if (!LoRa.begin(LORA_FREQUENCY)) {
-    Serial.println("FAILED!");
-    display.println("LoRa FAILED!");
+  // SPI is initialized by heltec_setup()
+
+  // Init LoRa SX1262 with RadioLib
+  Serial.print("[INIT] LoRa SX1262... ");
+  int16_t state = radio.begin();
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.print("FAILED! Error: ");
+    Serial.println(state);
+    display.clear();
+    display.drawString(0, 0, "LoRa FAILED!");
     display.display();
     while (1) delay(1000);
   }
-  LoRa.setSpreadingFactor(LORA_SPREAD_FACTOR);
-  LoRa.setSignalBandwidth(LORA_BANDWIDTH);
-  LoRa.setCodingRate4(LORA_CODING_RATE);
-  LoRa.setSyncWord(LORA_SYNC_WORD);
-  LoRa.enableCrc();
+
+  // Configure LoRa parameters
+  radio.setFrequency(LORA_FREQUENCY);
+  radio.setBandwidth(LORA_BANDWIDTH);
+  radio.setSpreadingFactor(LORA_SPREAD_FACTOR);
+  radio.setCodingRate(LORA_CODING_RATE);
+  radio.setSyncWord(LORA_SYNC_WORD);
+  radio.setCRC(true);  // Enable CRC
+  radio.setOutputPower(LORA_TX_POWER);
+
+  // Set up receive interrupt
+  radio.setDio1Action(onLoRaRx);
+  radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
   Serial.println("OK");
 
   // Init GPS UART
@@ -620,6 +694,9 @@ void setup() {
 
 // ========== MAIN LOOP ==========
 void loop() {
+  // Heltec library housekeeping (button, etc.)
+  heltec_loop();
+
   // PASSTHROUGH MODE - bypass all normal processing
   if (passthroughMode) {
     // Forward USB to GPS
@@ -1110,7 +1187,7 @@ void setupSDCard() {
 
   // Initialize SD_MMC in 1-bit mode for built-in SD card slot
   // Pins are fixed by hardware: CLK=GPIO14, CMD=GPIO15, D0=GPIO2
-  if (!SD_MMC.begin("/sdcard", true)) {  // true = 1-bit mode
+  if (!SD.begin(SD_CS_PIN)) {
     Serial.println("FAILED!");
     Serial.println("[SD] No card detected or init failed");
     Serial.println("[SD] Check: card inserted? FAT32 formatted?");
@@ -1120,7 +1197,7 @@ void setupSDCard() {
 
   Serial.println("OK");
 
-  uint8_t cardType = SD_MMC.cardType();
+  uint8_t cardType = SD.cardType();
   if (cardType == CARD_NONE) {
     Serial.println("[SD] No card attached");
     sdCardReady = false;
@@ -1133,7 +1210,7 @@ void setupSDCard() {
   else if (cardType == CARD_SDHC) Serial.println("SDHC");
   else Serial.println("UNKNOWN");
 
-  uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+  uint64_t cardSize = SD.cardSize() / (1024 * 1024);
   Serial.print("[SD] Card size: ");
   Serial.print(cardSize);
   Serial.println(" MB");
@@ -1163,7 +1240,7 @@ void createNewLogFileWithName(const char* projectName) {
     int suffix = 1;
     strncpy(logFileName, csvName.c_str(), sizeof(logFileName) - 1);
     logFileName[sizeof(logFileName) - 1] = '\0';
-    while (SD_MMC.exists(logFileName) && suffix < 100) {
+    while (SD.exists(logFileName) && suffix < 100) {
       csvName = baseName + "_" + String(suffix) + ".csv";
       ubxName = baseName + "_" + String(suffix) + ".ubx";
       strncpy(logFileName, csvName.c_str(), sizeof(logFileName) - 1);
@@ -1187,12 +1264,12 @@ void createNewLogFileWithName(const char* projectName) {
     int fileNum = 0;
     do {
       snprintf(logFileName, sizeof(logFileName), "/log_%04d.csv", fileNum++);
-    } while (SD_MMC.exists(logFileName) && fileNum < 10000);
+    } while (SD.exists(logFileName) && fileNum < 10000);
     fileNum--;  // Back to the number we're using
     snprintf(rawFileName, sizeof(rawFileName), "/raw_%04d.ubx", fileNum);
   }
 
-  logFile = SD_MMC.open(logFileName, FILE_WRITE);
+  logFile = SD.open(logFileName, FILE_WRITE);
   if (logFile) {
     // Write CSV header
     logFile.println("timestamp_ms,utc_time,gps_fix,lat,lon,alt_m,hdop,sats,depth_m,water_temp_c,rssi,snr,pitch,roll");
@@ -1207,7 +1284,7 @@ void createNewLogFileWithName(const char* projectName) {
     Serial.print("' (len=");
     Serial.print(strlen(rawFileName));
     Serial.println(")");
-    rawFile = SD_MMC.open(rawFileName, FILE_WRITE);
+    rawFile = SD.open(rawFileName, FILE_WRITE);
     if (rawFile) {
       Serial.print("[SD] PPK raw file: ");
       Serial.println(rawFileName);
@@ -1280,106 +1357,42 @@ void logData() {
 
 // ========== DISPLAY UPDATE ==========
 void updateDisplay() {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.setTextSize(1);
+  static uint32_t lastUpdate = 0;
+  static uint32_t callCount = 0;
+  if (millis() - lastUpdate < 500) return;  // 2Hz refresh
+  lastUpdate = millis();
+  callCount++;
 
-  // Row 1: RTK Status + Depth
-  display.setTextSize(1);
-  switch (gps.fixQuality) {
-    case 0: display.print("NO FIX"); break;
-    case 1: display.print("GPS"); break;
-    case 2: display.print("DGPS"); break;
-    case 4: display.print("FIXED"); break;
-    case 5: display.print("FLOAT"); break;
-    default: display.print("???"); break;
-  }
+  // Use the Heltec display directly
+  display.clear();
+  display.setTextAlignment(TEXT_ALIGN_LEFT);
+  display.setFont(ArialMT_Plain_10);
 
-  // Show depth on same row
-  if (sonar.valid && (millis() - sonar.lastUpdate < 5000)) {
-    display.print(" D:");
-    display.print(sonar.depthMeters, 1);
-    display.print("m");
-  }
-  display.println();
+  // Line 1: Status
+  String line1 = "Heltec #" + String(callCount);
+  if (wifiState == WIFI_UDP_READY) line1 += " WiFi";
+  display.drawString(0, 0, line1);
 
-  // Row 2: Satellites and HDOP
-  display.print("Sat:");
-  display.print(gps.satellites);
-  display.print(" H:");
-  display.print(gps.hdop, 1);
+  // Line 2: GPS
+  String line2 = "GPS:" + String(gps.fixQuality) + " Sat:" + String(gps.satellites);
+  display.drawString(0, 12, line2);
 
-  // Water temp
-  if (sonar.waterTempC > 0) {
-    display.print(" ");
-    display.print((int)sonar.waterTempC);
-    display.print("C");
-  }
-  display.println();
-
-  // Row 3: Altitude
-  display.print("Alt:");
-  display.print(gps.altitude, 1);
-  display.print("m");
-  display.println();
-
-  // Row 4: LoRa status TX / RSSI
-  display.print("TX:");
-  display.print(loraStatusTxCount);
-  display.print(" RSSI:");
-  display.println(lastRSSI);
-
-  // Row 5: WiFi/Deeper status + BLE
-  display.print("WiFi:");
-  switch (wifiState) {
-    case WIFI_DISCONNECTED: display.print("OFF"); break;
-    case WIFI_CONNECTING:   display.print("..."); break;
-    case WIFI_CONNECTED:
-    case WIFI_UDP_READY:    display.print("OK"); break;
-  }
-
-  // BLE status
-  display.print(" BLE:");
-  display.print(bleConnected ? "Y" : "N");
-  display.println();
-
-  // Row 6: SD status / PPK status
-  display.print("SD:");
-  if (sdCardReady) {
-    display.print(logEntriesWritten);
+  // Line 3: Depth
+  String line3 = "Depth:";
+  if (sonar.valid) {
+    line3 += String(sonar.depthMeters, 2) + "m";
   } else {
-    display.print("NO");
+    line3 += "--";
   }
-  display.print(" PPK:");
-  display.print(ubxMessagesLogged);
-  display.println();
+  display.drawString(0, 24, line3);
 
-  // Row 7: RTCM status (for RTK)
-  display.print("RTCM:");
-  // Row 5: LoRa RTCM stats (if receiving via LoRa)
-  if (millis() - lastLoraRtcmTime < 5000) {
-    display.print("LoRa:");
-    display.print(loraRtcmReceived);
-    display.print(" R:");
-    display.println(loraRssi);
-  } else {
-    display.println("");
-  }
+  // Line 4: IMU
+  String line4 = "P:" + String(imu.pitch, 1) + " R:" + String(imu.roll, 1);
+  display.drawString(0, 36, line4);
 
-  // Show BLE RTCM if receiving, otherwise show LoRa RTCM
-  if (rtcmBleForwarded > 0) {
-    display.print(rtcmBleForwarded / 1000);  // KB received
-    display.print("KB");
-  } else {
-    display.print(rtcmMsgReceived);
-  }
-  // Show age of last RTCM
-  uint32_t rtcmAge = (millis() - rtcmLastReceived) / 1000;
-  if (rtcmLastReceived > 0 && rtcmAge < 999) {
-    display.print(" ");
-    display.print(rtcmAge);
-    display.print("s");
-  }
+  // Line 5: LoRa
+  String line5 = "LoRa:" + String(loraPacketsReceived) + " R:" + String(loraRssi);
+  display.drawString(0, 48, line5);
 
   display.display();
 }
@@ -1912,39 +1925,56 @@ void forwardRtcmToM8P() {
 
 // ========== LORA RTCM RECEPTION WITH FEC ==========
 void receiveLoRaRTCM() {
-  int packetSize = LoRa.parsePacket();
-  if (packetSize == 0) return;
+  // Check if we received a packet (interrupt-driven)
+  if (!loraRxFlag) return;
+  loraRxFlag = false;
 
-  uint8_t firstByte = LoRa.peek();
+  // Read the packet into buffer
+  int16_t state = radio.readData(loraRxBuffer, 256);
+  if (state != RADIOLIB_ERR_NONE) {
+    // Restart receive
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
+    return;
+  }
+
+  int packetSize = radio.getPacketLength();
+  if (packetSize == 0) {
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
+    return;
+  }
+
+  uint8_t firstByte = loraRxBuffer[0];
+  int loraBufferIdx = 0;  // Current read position in buffer
 
   // Handle CLEAR beacon from Shore Station - signals OK to transmit status
   if (firstByte == CLEAR_BEACON_TYPE) {
-    LoRa.read();  // Consume the beacon byte
-    while (LoRa.available()) LoRa.read();  // Drain any extra
+    // Packet already read into buffer, just handle it
     clearBeaconReceived = true;
     lastClearBeaconTime = millis();
     lastLoraRx = millis();
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
     return;
   }
 
   // Ignore our own status (0xBB) or command packets (0xCC)
   if (firstByte == STATUS_PACKET_TYPE || firstByte == COMMAND_PACKET_TYPE) {
-    while (LoRa.available()) LoRa.read();
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
     return;
   }
 
   // RTCM fragment: [fragNum][totalFrags][timestamp(2 bytes, frag 0 only)][data...]
   if (packetSize < 3) {
-    while (LoRa.available()) LoRa.read();
+    // Buffer already read
     return;
   }
 
   loraPacketsReceived++;
-  loraRssi = LoRa.packetRssi();
+  loraRssi = (int16_t)radio.getRSSI();
   lastLoraRx = millis();
+  loraBufferIdx = 0;  // Reset buffer position
 
-  uint8_t fragNum = LoRa.read();
-  uint8_t totalFrags = LoRa.read();
+  uint8_t fragNum = loraRxBuffer[loraBufferIdx++];
+  uint8_t totalFrags = loraRxBuffer[loraBufferIdx++];
 
   // Declare variables before any goto to avoid "crosses initialization" error
   uint16_t dataLen = 0;
@@ -1954,30 +1984,31 @@ void receiveLoRaRTCM() {
   if (fragNum == PARITY_FRAGMENT_MARKER) {
     dataLen = packetSize - 2;
     if (dataLen <= MAX_FRAGMENT_SIZE) {
-      for (uint16_t i = 0; i < dataLen && LoRa.available(); i++) {
-        loraParityBuffer[i] = LoRa.read();
+      for (uint16_t i = 0; i < dataLen && loraBufferIdx < packetSize; i++) {
+        loraParityBuffer[i] = loraRxBuffer[loraBufferIdx++];
       }
       loraParityLen = dataLen;
       loraParityReceived = true;
     }
-    while (LoRa.available()) LoRa.read();
+    // Restart receive
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
     // Check if we can now recover a missing fragment
     goto check_fec_recovery;
   }
 
   if (totalFrags == 0 || totalFrags > 10 || fragNum >= totalFrags) {
-    while (LoRa.available()) LoRa.read();
+    // Buffer already read
     return;
   }
 
   if (fragNum == 0) {
     // First fragment - skip timestamp (2 bytes)
     if (packetSize < 5) {
-      while (LoRa.available()) LoRa.read();
+      radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
       return;
     }
-    LoRa.read(); // timestamp low
-    LoRa.read(); // timestamp high
+    loraBufferIdx++; // timestamp low
+    loraBufferIdx++; // timestamp high
     dataLen = packetSize - 4;
     fragOffset = 0;
 
@@ -1999,8 +2030,8 @@ void receiveLoRaRTCM() {
 
   // Read data into buffer
   if (fragOffset + dataLen <= LORA_RTCM_BUFFER_SIZE) {
-    for (uint16_t i = 0; i < dataLen && LoRa.available(); i++) {
-      loraRtcmBuffer[fragOffset + i] = LoRa.read();
+    for (uint16_t i = 0; i < dataLen && loraBufferIdx < packetSize; i++) {
+      loraRtcmBuffer[fragOffset + i] = loraRxBuffer[loraBufferIdx++];
     }
     loraReceivedFragments++;
     loraFragmentMask |= (1 << fragNum);  // Mark fragment received
@@ -2010,11 +2041,10 @@ void receiveLoRaRTCM() {
       loraRtcmIndex = fragOffset + dataLen;
     }
   } else {
-    while (LoRa.available()) LoRa.read();
+    // Buffer already read
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
     return;
   }
-
-  while (LoRa.available()) LoRa.read();
 
 check_fec_recovery:
   // Count missing fragments
@@ -2030,6 +2060,7 @@ check_fec_recovery:
   // All fragments received - use directly
   if (missingCount == 0 && loraRtcmIndex > 0) {
     forwardRtcmToM8P();
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
     return;
   }
 
@@ -2077,6 +2108,9 @@ check_fec_recovery:
 
     forwardRtcmToM8P();
   }
+
+  // Restart receive mode
+  radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
 }
 
 // ========== LORA TELEMETRY TX ==========
@@ -2164,10 +2198,21 @@ void sendLoRaStatus() {
   }
 
   // Send via LoRa with magic byte prefix
-  LoRa.beginPacket();
-  LoRa.write(STATUS_PACKET_TYPE);  // Magic byte 0xBB
-  LoRa.print(status);
-  LoRa.endPacket();
+  // Build packet in buffer
+  uint8_t txBuffer[256];
+  txBuffer[0] = STATUS_PACKET_TYPE;  // Magic byte 0xBB
+  int txLen = 1;
+  for (size_t i = 0; i < status.length() && txLen < 255; i++) {
+    txBuffer[txLen++] = status[i];
+  }
+
+  // Transmit (blocks until done)
+  radio.clearDio1Action();
+  radio.transmit(txBuffer, txLen);
+
+  // Restart receive mode
+  radio.setDio1Action(onLoRaRx);
+  radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
 
   lastLoraStatusTx = millis();
   loraStatusTxCount++;
@@ -2592,7 +2637,7 @@ void handleListLogs() {
     return;
   }
 
-  File root = SD_MMC.open("/");
+  File root = SD.open("/");
   if (!root) {
     bleSend("ERR:OPEN_FAILED\n");
     return;
@@ -2647,7 +2692,7 @@ void handleDownloadLog(const String& filename) {
   }
 
   String path = "/" + filename;
-  File file = SD_MMC.open(path.c_str(), FILE_READ);
+  File file = SD.open(path.c_str(), FILE_READ);
   if (!file) {
     bleSend("ERR:FILE_NOT_FOUND\n");
     return;
@@ -2695,7 +2740,7 @@ void handleDeleteAllLogs() {
     rawFile.close();
   }
 
-  File root = SD_MMC.open("/");
+  File root = SD.open("/");
   if (!root) {
     bleSend("ERR:OPEN_FAILED\n");
     return;
@@ -2723,7 +2768,7 @@ void handleDeleteAllLogs() {
 
   // Second pass: delete files
   for (int i = 0; i < fileCount; i++) {
-    if (SD_MMC.remove(filesToDelete[i].c_str())) {
+    if (SD.remove(filesToDelete[i].c_str())) {
       deletedCount++;
       Serial.print("[LOG] Deleted: ");
       Serial.println(filesToDelete[i]);

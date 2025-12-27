@@ -126,6 +126,11 @@ class MainActivity : AppCompatActivity() {
     private var lastBdsTime = 0L
     private var lastBiasTime = 0L
 
+    // RTCM timing analysis - tracks when messages arrive from NTRIP
+    private var lastRtcmMsgTime = 0L
+    private var rtcmEpochStart = 0L
+    private var rtcmEpochMsgs = mutableListOf<Int>()
+
     private val handler = Handler(Looper.getMainLooper())
     private val lineBuffer = StringBuilder()
 
@@ -1301,8 +1306,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateDisplay(fix: Int, sats: Int, depth: Float, temp: Float, recording: Boolean, pitch: Float, roll: Float, carrSoln: Int = 0, pdop: Float = 99.9f, hdop: Float = 99.9f, hAcc: Float = 99.9f, vAcc: Float = 99.9f, lat: Double = 0.0, lon: Double = 0.0) {
-        // GPS Fix Status
-        when (fix) {
+        // GPS Fix Status - use accuracy to determine Fixed vs Float
+        // If hAcc < 5cm, consider it Fixed regardless of carrSoln
+        val effectiveFix = when {
+            fix == 4 -> 4  // Already Fixed
+            fix == 5 && hAcc < 0.05f -> 4  // Float but <5cm accuracy = treat as Fixed
+            else -> fix
+        }
+        when (effectiveFix) {
             0 -> { fixStatus.text = "No Fix"; fixStatus.setTextColor(0xFF888888.toInt()); fixIndicator.setBackgroundResource(R.drawable.indicator_no_fix) }
             1 -> { fixStatus.text = "GPS"; fixStatus.setTextColor(0xFFFFEB3B.toInt()); fixIndicator.setBackgroundResource(R.drawable.indicator_gps) }
             2 -> { fixStatus.text = "DGPS"; fixStatus.setTextColor(0xFFFF9800.toInt()); fixIndicator.setBackgroundResource(R.drawable.indicator_dgps) }
@@ -2495,6 +2506,23 @@ class MainActivity : AppCompatActivity() {
             val msgType = ((message[3].toInt() and 0xFF) shl 4) or ((message[4].toInt() and 0xF0) shr 4)
 
             rtcmMessagesReceived++
+
+            // TIMING ANALYSIS: Log when each message arrives
+            val now = System.currentTimeMillis()
+            val gap = if (lastRtcmMsgTime > 0) now - lastRtcmMsgTime else 0
+
+            // Check for new epoch (gap > 200ms means new epoch started)
+            if (gap > 200) {
+                if (rtcmEpochMsgs.isNotEmpty()) {
+                    android.util.Log.w("RTCM-TIMING", "EPOCH COMPLETE: ${rtcmEpochMsgs.joinToString(",")}")
+                }
+                rtcmEpochStart = now
+                rtcmEpochMsgs.clear()
+            }
+            rtcmEpochMsgs.add(msgType)
+
+            android.util.Log.d("RTCM-TIMING", "MSG $msgType gap=${gap}ms epochTime=${now - rtcmEpochStart}ms")
+            lastRtcmMsgTime = now
 
             // Update counters and check rate limits
             val shouldSend = shouldSendMessage(msgType)

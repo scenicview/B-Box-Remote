@@ -1,8 +1,8 @@
 /*
- * TTGO LoRa32 V2.0 - Shore Station (Bidirectional)
+ * Heltec LoRa32 V3 - Base Link (Bidirectional)
  *
  * Combines RTCM relay with status reception from B-Box:
- * - Connects to NTRIP caster via WiFi
+ * - Connects to NTRIP caster via WiFi (LiBase)
  * - Transmits RTCM corrections to B-Box via LoRa
  * - Receives status telemetry from B-Box via LoRa
  * - Forwards status to phone via BLE (Nordic UART Service)
@@ -12,28 +12,116 @@
  * - RX: Listen for B-Box status (~300ms)
  * - Cycle: ~1 Hz for both directions
  *
- * Hardware: TTGO LoRa32 V2.0 (ESP32 + SX1276 + OLED)
+ * Hardware: Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262 + OLED)
  */
 
+// Heltec library must be first
+#include <heltec_unofficial.h>
+
 #include <SPI.h>
-#include <LoRa.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <base64.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 #include <NimBLEDevice.h>
 
-// ========== PIN DEFINITIONS (TTGO LoRa32 V2.0) ==========
-#define LORA_SCK     5
-#define LORA_MISO    19
-#define LORA_MOSI    27
-#define LORA_CS      18
-#define LORA_RST     14
-#define LORA_DIO0    26
+// RadioLib interrupt flags
+volatile bool loraRxFlag = false;
+volatile bool loraTxDone = false;
 
-#define OLED_SDA     21
-#define OLED_SCL     22
+// LoRa RX interrupt handler
+void IRAM_ATTR onLoRaRx() {
+  loraRxFlag = true;
+}
+// ========== LORA TX HELPER ==========
+// Buffer for building LoRa packets
+uint8_t loraTxBuffer[256];
+int loraTxLen = 0;
+
+void loraBeginPacket() {
+  loraTxLen = 0;
+}
+
+void loraWrite(uint8_t b) {
+  if (loraTxLen < 256) {
+    loraTxBuffer[loraTxLen++] = b;
+  }
+}
+
+void loraWrite(uint8_t* data, int len) {
+  for (int i = 0; i < len && loraTxLen < 256; i++) {
+    loraTxBuffer[loraTxLen++] = data[i];
+  }
+}
+
+void loraPrint(const String& s) {
+  for (size_t i = 0; i < s.length() && loraTxLen < 256; i++) {
+    loraTxBuffer[loraTxLen++] = s[i];
+  }
+}
+
+void loraEndPacket() {
+  radio.transmit(loraTxBuffer, loraTxLen);
+}
+
+// ========== LORA RX HELPER ==========
+uint8_t loraRxBuffer[256];
+int loraRxLen = 0;
+int loraRxIdx = 0;
+
+int loraParsePacket() {
+  if (!loraRxFlag) return 0;
+  loraRxFlag = false;
+
+  int16_t state = radio.readData(loraRxBuffer, 256);
+  if (state != RADIOLIB_ERR_NONE) {
+    radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
+    return 0;
+  }
+
+  loraRxLen = radio.getPacketLength();
+  loraRxIdx = 0;
+  return loraRxLen;
+}
+
+uint8_t loraPeek() {
+  if (loraRxIdx < loraRxLen) {
+    return loraRxBuffer[loraRxIdx];
+  }
+  return 0;
+}
+
+uint8_t loraRead() {
+  if (loraRxIdx < loraRxLen) {
+    return loraRxBuffer[loraRxIdx++];
+  }
+  return 0;
+}
+
+bool loraAvailable() {
+  return loraRxIdx < loraRxLen;
+}
+
+int16_t loraPacketRssi() {
+  return (int16_t)radio.getRSSI();
+}
+
+float loraPacketSnr() {
+  return radio.getSNR();
+}
+
+void loraStartReceive() {
+  radio.setDio1Action(onLoRaRx);
+  radio.startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF);
+}
+
+
+// ========== PIN DEFINITIONS (Heltec LoRa32 V3) ==========
+// LoRa SX1262 pins defined in heltec_unofficial.h:
+// SS=GPIO8, DIO1=GPIO14, RST_LoRa=GPIO12, BUSY_LoRa=GPIO13
+// SPI: SCK=GPIO9, MISO=GPIO11, MOSI=GPIO10
+
+// OLED handled by Heltec library:
+// SDA_OLED=GPIO17, SCL_OLED=GPIO18, RST_OLED=GPIO21
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
@@ -47,8 +135,9 @@ const char* NTRIP_USER    = "chris";
 const char* NTRIP_PASS    = "chris";
 
 // ========== LORA CONFIGURATION (MUST MATCH B-BOX) ==========
-#define LORA_FREQUENCY     915E6
-#define LORA_BANDWIDTH     125E3
+// RadioLib uses MHz and kHz units
+#define LORA_FREQUENCY     915.0    // MHz
+#define LORA_BANDWIDTH     125.0    // kHz
 #define LORA_SPREAD_FACTOR 7        // SF7 - DO NOT CHANGE
 #define LORA_CODING_RATE   5        // 4/5 - DO NOT CHANGE
 #define LORA_SYNC_WORD     0x12
@@ -68,7 +157,7 @@ const char* NTRIP_PASS    = "chris";
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
 // ========== OBJECTS ==========
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+// Display is created by Heltec library as 'display' (SSD1306Wire)
 WiFiClient ntripClient;
 NimBLEServer *pServer = NULL;
 NimBLECharacteristic *pTxCharacteristic = NULL;
@@ -84,7 +173,7 @@ volatile uint16_t bleRtcmHead = 0;
 volatile uint16_t bleRtcmTail = 0;
 
 // ========== NTRIP CONTROL ==========
-bool shoreNtripEnabled = true;   // Enable Shore Station's own NTRIP
+bool baseLinkNtripEnabled = true;   // Enable Base Link's own NTRIP
 
 // ========== RTCM STATE ==========
 uint8_t rtcmBuffer[RTCM_BUFFER_SIZE];
@@ -314,7 +403,7 @@ void connectNTRIP() {
   String request = "GET /" + String(NTRIP_MOUNT) + " HTTP/1.1\r\n";
   request += "Host: " + String(NTRIP_HOST) + ":" + String(NTRIP_PORT) + "\r\n";
   request += "Ntrip-Version: Ntrip/2.0\r\n";
-  request += "User-Agent: NTRIP ShoreStation/1.0\r\n";
+  request += "User-Agent: NTRIP BaseLink/1.0\r\n";
   request += "Accept: */*\r\n";
   request += "Authorization: Basic " + authBase64 + "\r\n";
   request += "Connection: keep-alive\r\n\r\n";
@@ -366,27 +455,27 @@ void sendRTCMviaLoRa(uint8_t* data, uint16_t length) {
 
   // Send data fragments
   for (uint8_t frag = 0; frag < totalFragments; frag++) {
-    LoRa.beginPacket();
-    LoRa.write(frag);
-    LoRa.write(totalFragments);
+    loraBeginPacket();
+    loraWrite(frag);
+    loraWrite(totalFragments);
 
     uint8_t fragData[MAX_FRAGMENT_SIZE];
     uint16_t fragLen = 0;
 
     if (frag == 0) {
       uint16_t ts = (uint16_t)(txTimestamp & 0xFFFF);
-      LoRa.write(ts & 0xFF);
-      LoRa.write((ts >> 8) & 0xFF);
+      loraWrite(ts & 0xFF);
+      loraWrite((ts >> 8) & 0xFF);
 
       fragLen = min((uint16_t)firstFragMax, length);
       memcpy(fragData, data, fragLen);
-      LoRa.write(fragData, fragLen);
+      loraWrite(fragData, fragLen);
       dataOffset = fragLen;
     } else {
       uint16_t remaining = length - dataOffset;
       fragLen = min((uint16_t)MAX_FRAGMENT_SIZE, remaining);
       memcpy(fragData, data + dataOffset, fragLen);
-      LoRa.write(fragData, fragLen);
+      loraWrite(fragData, fragLen);
       dataOffset += fragLen;
     }
 
@@ -398,7 +487,7 @@ void sendRTCMviaLoRa(uint8_t* data, uint16_t length) {
       if (fragLen > parityLen) parityLen = fragLen;
     }
 
-    LoRa.endPacket();
+    loraEndPacket();
     packetsTransmitted++;
     yield();
 
@@ -408,11 +497,11 @@ void sendRTCMviaLoRa(uint8_t* data, uint16_t length) {
   // Send parity fragment for multi-fragment messages
   if (useParity && parityLen > 0) {
     delay(30);
-    LoRa.beginPacket();
-    LoRa.write(PARITY_FRAGMENT_MARKER);  // 0xFE = parity
-    LoRa.write(totalFragments);
-    LoRa.write(parityBuffer, parityLen);
-    LoRa.endPacket();
+    loraBeginPacket();
+    loraWrite(PARITY_FRAGMENT_MARKER);  // 0xFE = parity
+    loraWrite(totalFragments);
+    loraWrite(parityBuffer, parityLen);
+    loraEndPacket();
     packetsTransmitted++;
     yield();
   }
@@ -554,34 +643,34 @@ void processRTCMByte(uint8_t byte) {
 // ========== RECEIVE B-BOX STATUS ==========
 // Send CLEAR beacon to signal B-BOX can transmit status
 void sendClearBeacon() {
-  LoRa.beginPacket();
-  LoRa.write(CLEAR_BEACON_TYPE);  // 0xDD
-  LoRa.endPacket();
+  loraBeginPacket();
+  loraWrite(CLEAR_BEACON_TYPE);  // 0xDD
+  loraEndPacket();
   clearBeaconSent = true;
   Serial.println("[LoRa TX] CLEAR beacon sent");
   yield();
 }
 
 void checkForBBoxStatus() {
-  int packetSize = LoRa.parsePacket();
+  int packetSize = loraParsePacket();
   if (packetSize > 0) {
     Serial.print("[LoRa RX] Packet: ");
     Serial.print(packetSize);
     Serial.println(" bytes");
     // Check for status packet magic byte
-    uint8_t firstByte = LoRa.peek();
+    uint8_t firstByte = loraPeek();
 
     if (firstByte == STATUS_PACKET_TYPE) {
-      LoRa.read(); // Consume magic byte
+      loraRead(); // Consume magic byte
 
-      bbox.rssi = LoRa.packetRssi();
-      bbox.snr = LoRa.packetSnr();
+      bbox.rssi = loraPacketRssi();
+      bbox.snr = loraPacketSnr();
 
       // Read status data
       char statusBuf[128];
       int idx = 0;
-      while (LoRa.available() && idx < 127) {
-        statusBuf[idx++] = LoRa.read();
+      while (loraAvailable() && idx < 127) {
+        statusBuf[idx++] = loraRead();
       }
       statusBuf[idx] = '\0';
 
@@ -679,7 +768,7 @@ void handleBLECommands() {
       bleSend("PONG\n");
     }
     else if (cmd == "SHORE_NTRIP_ON") {
-      shoreNtripEnabled = true;
+      baseLinkNtripEnabled = true;
       if (wifiConnected && !ntripConnected) {
         connectNTRIP();
       }
@@ -687,7 +776,7 @@ void handleBLECommands() {
       Serial.println("[CMD] Shore NTRIP enabled");
     }
     else if (cmd == "SHORE_NTRIP_OFF") {
-      shoreNtripEnabled = false;
+      baseLinkNtripEnabled = false;
       if (ntripConnected) {
         ntripClient.stop();
         ntripConnected = false;
@@ -700,102 +789,110 @@ void handleBLECommands() {
 
 // Send command to B-Box via LoRa
 void sendCommandViaLoRa(const char* cmdStr) {
-  LoRa.beginPacket();
-  LoRa.write(0xCC);  // Command packet type
-  LoRa.print(cmdStr);
-  LoRa.endPacket();
+  loraBeginPacket();
+  loraWrite(0xCC);  // Command packet type
+  loraPrint(cmdStr);
+  loraEndPacket();
   Serial.print("[CMD] Sent via LoRa: ");
   Serial.println(cmdStr);
 }
 
 // ========== DISPLAY ==========
 void updateDisplay() {
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.setTextSize(1);
+  static uint32_t lastUpdate = 0;
+  if (millis() - lastUpdate < 500) return;
+  lastUpdate = millis();
 
-  // Row 1: Mode indicator
-  display.println("== SHORE STATION ==");
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
 
-  // Row 2: Connection status
-  display.print("WiFi:");
-  display.print(wifiConnected ? "OK " : "NO ");
-  display.print("NTRIP:");
-  display.println(ntripConnected ? "OK" : "NO");
+  // Line 1: Status
+  String line1 = "BaseLink";
+  if (wifiConnected) line1 += " WiFi";
+  if (ntripConnected) line1 += " NTRIP";
+  display.drawString(0, 0, line1);
 
-  // Row 3: RTCM stats
-  display.print("TX:");
-  display.print(rtcmMessagesProcessed);
-  display.print(" G:");
-  display.print(cntGps);
-  display.print("/");
-  display.println(cntGlo);
+  // Line 2: RTCM stats
+  String line2 = "TX:" + String(packetsTransmitted);
+  line2 += " RTCM:" + String(rtcmMessagesProcessed);
+  display.drawString(0, 12, line2);
 
-  // Row 4: B-Box status (if recent)
+  // Line 3: B-Box status
+  String line3 = "BBox:";
   if (bbox.valid && (millis() - bbox.lastUpdate < 5000)) {
-    display.print("Fix:");
-    display.print(bbox.fixQuality);
-    display.print(" D:");
-    display.print(bbox.depth, 1);
-    display.println("m");
-
-    // Row 5: Signal
-    display.print("R:");
-    display.print(bbox.rssi);
-    display.print(" S:");
-    display.println(bbox.snr, 1);
+    line3 += "Fix" + String(bbox.fixQuality);
+    line3 += " S" + String(bbox.satellites);
   } else {
-    display.println("B-Box: No signal");
-    display.println("");
+    line3 += "--";
   }
+  display.drawString(0, 24, line3);
 
-  // Row 6: BLE status
-  display.print("BLE:");
-  display.println(bleConnected ? "Connected" : "Waiting...");
+  // Line 4: B-Box depth
+  String line4 = "D:";
+  if (bbox.valid && bbox.depth > 0) {
+    line4 += String(bbox.depth, 2) + "m";
+  } else {
+    line4 += "--";
+  }
+  line4 += " R:" + String(bbox.rssi);
+  display.drawString(0, 36, line4);
+
+  // Line 5: Status packets
+  String line5 = "Status RX:" + String(statusPacketsReceived);
+  display.drawString(0, 48, line5);
 
   display.display();
 }
 
 // ========== SETUP ==========
 void setup() {
+  // Enable external power and init Heltec
+  heltec_ve(true);
+  delay(50);
+  heltec_setup();
+
+  // Reset and init OLED
+  pinMode(RST_OLED, OUTPUT);
+  digitalWrite(RST_OLED, LOW);
+  delay(50);
+  digitalWrite(RST_OLED, HIGH);
+  delay(50);
+
+  display.init();
+  display.setContrast(255);
+  display.flipScreenVertically();
+  display.clear();
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(0, 0, "Base Link");
+  display.drawString(0, 12, "Starting...");
+  display.display();
+
+
   Serial.begin(115200);
   delay(1000);
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("    SHORE STATION (Bidirectional)");
+  Serial.println("    BASE LINK (Bidirectional)");
   Serial.println("========================================");
   Serial.println();
 
-  // Init OLED
-  Wire.begin(OLED_SDA, OLED_SCL);
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println("OLED failed!");
-  }
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
-  display.setCursor(0, 0);
-  display.println("Shore Station");
-  display.println("Starting...");
-  display.display();
-
-  // Init LoRa
-  Serial.print("[INIT] LoRa... ");
-  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
-  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
-
-  if (!LoRa.begin(LORA_FREQUENCY)) {
-    Serial.println("FAILED!");
+  // Init LoRa SX1262
+  Serial.print("[INIT] LoRa SX1262... ");
+  int16_t state = radio.begin();
+  if (state != RADIOLIB_ERR_NONE) {
+    Serial.print("FAILED! Error: ");
+    Serial.println(state);
     while (1) delay(1000);
   }
-
-  LoRa.setSpreadingFactor(LORA_SPREAD_FACTOR);
-  LoRa.setSignalBandwidth(LORA_BANDWIDTH);
-  LoRa.setCodingRate4(LORA_CODING_RATE);
-  LoRa.setSyncWord(LORA_SYNC_WORD);
-  LoRa.setTxPower(LORA_TX_POWER);
-  LoRa.enableCrc();
+  radio.setFrequency(LORA_FREQUENCY);
+  radio.setBandwidth(LORA_BANDWIDTH);
+  radio.setSpreadingFactor(LORA_SPREAD_FACTOR);
+  radio.setCodingRate(LORA_CODING_RATE);
+  radio.setSyncWord(LORA_SYNC_WORD);
+  radio.setCRC(true);
+  radio.setOutputPower(LORA_TX_POWER);
+  loraStartReceive();
   Serial.println("OK");
 
   // Init BLE
@@ -805,16 +902,17 @@ void setup() {
   connectWiFi();
 
   // Connect NTRIP (only if enabled)
-  if (shoreNtripEnabled && wifiConnected) {
+  if (baseLinkNtripEnabled && wifiConnected) {
     connectNTRIP();
   }
 
   updateDisplay();
-  Serial.println("*** SHORE STATION READY ***");
+  Serial.println("*** BASE LINK READY ***");
 }
 
 // ========== LOOP ==========
 void loop() {
+  heltec_loop();
   // Check WiFi/NTRIP connections
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnected = false;
@@ -824,11 +922,11 @@ void loop() {
   if (millis() - lastNtripCheck > 10000) {
     lastNtripCheck = millis();
     if (!wifiConnected) connectWiFi();
-    if (shoreNtripEnabled && wifiConnected && !ntripConnected) connectNTRIP();
+    if (baseLinkNtripEnabled && wifiConnected && !ntripConnected) connectNTRIP();
   }
 
   // Process NTRIP data (TX mode) - limit bytes per loop to allow RX
-  if (shoreNtripEnabled && ntripConnected && ntripClient.connected() && !inRxMode) {
+  if (baseLinkNtripEnabled && ntripConnected && ntripClient.connected() && !inRxMode) {
     int bytesRead = 0;
     while (ntripClient.available() && bytesRead < 100) {  // Process max 100 bytes per loop
       uint8_t byte = ntripClient.read();
